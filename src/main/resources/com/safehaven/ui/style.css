@@ -1,0 +1,116 @@
+/* Dark Theme for SafeHaven */
+
+.root {
+    -fx-base: #1e1e1e;
+    -fx-background-color: #1e1e1e;
+    -fx-control-inner-background: #2d2d2d;
+    -fx-control-inner-background-alt: #363636;
+    -fx-faint-focus-color: transparent;
+    -fx-focus-color: #0078d7;
+    -fx-text-base-color: #e0e0e0;
+    -fx-text-fill: #e0e0e0;
+    -fx-accent: #0078d7;
+    -fx-font-family: "Segoe UI", sans-serif;
+    -fx-font-size: 14px;
+}
+
+.label {
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: bold;
+}
+
+.button {
+    -fx-background-color: #0078d7;
+    -fx-text-fill: white;
+    -fx-background-radius: 5;
+    -fx-padding: 8 15 8 15;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.4), 5, 0, 0, 0);
+    -fx-font-weight: bold;
+}
+
+.button:hover {
+    -fx-background-color: #0099ff;
+    -fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.6), 8, 0, 0, 2);
+}
+
+.button:pressed {
+    -fx-background-color: #005a9e;
+    -fx-effect: innershadow(three-pass-box, rgba(0,0,0,0.4), 5, 0, 0, 0);
+}
+
+.text-field, .password-field {
+    -fx-background-color: #2d2d2d;
+    -fx-text-fill: white;
+    -fx-prompt-text-fill: #888888;
+    -fx-background-radius: 5;
+    -fx-border-color: #3e3e3e;
+    -fx-border-radius: 5;
+    -fx-padding: 8;
+}
+
+.text-field:focused, .password-field:focused {
+    -fx-border-color: #0078d7;
+}
+
+.table-view {
+    -fx-background-color: #2d2d2d;
+    -fx-table-cell-border-color: transparent;
+    -fx-background-radius: 5;
+    -fx-padding: 5;
+}
+
+.table-view .column-header-background {
+    -fx-background-color: #1e1e1e;
+    -fx-background-radius: 5 5 0 0;
+}
+
+.table-view .column-header, .table-view .filler {
+    -fx-background-color: transparent;
+    -fx-size: 35;
+    -fx-border-color: transparent;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: #aaaaaa;
+    -fx-font-weight: normal;
+}
+
+.table-row-cell {
+    -fx-background-color: #2d2d2d;
+    -fx-border-color: transparent transparent #3e3e3e transparent;
+}
+
+.table-row-cell:odd {
+    -fx-background-color: #363636;
+}
+
+.table-row-cell:selected {
+    -fx-background-color: #004c8c;
+    -fx-text-fill: white;
+}
+
+.table-row-cell:empty {
+    -fx-background-color: #2d2d2d;
+}
+
+.progress-bar .track {
+    -fx-background-color: #2d2d2d;
+    -fx-background-radius: 5;
+}
+
+.progress-bar .bar {
+    -fx-background-color: linear-gradient(to right, #0078d7, #00c6ff);
+    -fx-background-radius: 5;
+}
+
+/* Specific Style Classes */
+.title-label {
+    -fx-font-size: 28px;
+    -fx-text-fill: #00c6ff;
+    -fx-effect: dropshadow(gaussian, rgba(0, 198, 255, 0.4), 10, 0, 0, 0);
+}
+
+.container {
+    -fx-background-color: #1e1e1e;
+}
