@@ -4,6 +4,8 @@
 <?import javafx.scene.control.Button?>
 <?import javafx.scene.control.Label?>
 <?import javafx.scene.control.ProgressBar?>
+<?import javafx.scene.control.Tab?>
+<?import javafx.scene.control.TabPane?>
 <?import javafx.scene.control.TableColumn?>
 <?import javafx.scene.control.TableView?>
 <?import javafx.scene.control.TextField?>
@@ -25,26 +27,62 @@
       </HBox>
    </top>
    <center>
-      <TableView fx:id="fileTable" prefHeight="400.0" prefWidth="600.0" BorderPane.alignment="CENTER">
-        <columns>
-          <TableColumn fx:id="filenameColumn" prefWidth="300.0" text="Filename" />
-          <TableColumn fx:id="sizeColumn" prefWidth="100.0" text="Size (bytes)" />
-            <TableColumn fx:id="dateColumn" prefWidth="180.0" text="Date Uploaded" />
-        </columns>
-      </TableView>
+      <TabPane fx:id="tabPane" tabClosingPolicy="UNAVAILABLE" BorderPane.alignment="CENTER">
+        <tabs>
+          <Tab text="Мои файлы">
+            <content>
+              <VBox>
+                  <TableView fx:id="fileTable" VBox.vgrow="ALWAYS" prefHeight="400.0" prefWidth="600.0">
+                    <columns>
+                      <TableColumn fx:id="filenameColumn" prefWidth="300.0" text="Filename" />
+                      <TableColumn fx:id="sizeColumn" prefWidth="100.0" text="Size (bytes)" />
+                        <TableColumn fx:id="dateColumn" prefWidth="180.0" text="Date Uploaded" />
+                    </columns>
+                  </TableView>
+                  <HBox alignment="CENTER" spacing="15.0">
+                     <padding>
+                        <Insets bottom="10.0" top="10.0" />
+                     </padding>
+                     <children>
+                        <Button onAction="#handleUpload" text="Upload File" />
+                        <Button onAction="#handleDownload" text="Download" />
+                        <Button onAction="#handleShare" text="Share File" />
+                        <Button onAction="#handleDelete" text="Delete" style="-fx-background-color: #d32f2f;" />
+                     </children>
+                  </HBox>
+              </VBox>
+            </content>
+          </Tab>
+          <Tab text="Поделились со мной">
+            <content>
+              <VBox>
+                  <TableView fx:id="sharedTable" VBox.vgrow="ALWAYS" prefHeight="400.0" prefWidth="600.0">
+                    <columns>
+                      <TableColumn fx:id="sharedFilenameColumn" prefWidth="240.0" text="Filename" />
+                      <TableColumn fx:id="sharedFromColumn" prefWidth="160.0" text="From User" />
+                      <TableColumn fx:id="sharedSizeColumn" prefWidth="100.0" text="Size" />
+                      <TableColumn fx:id="sharedDateColumn" prefWidth="180.0" text="Date Shared" />
+                    </columns>
+                  </TableView>
+                  <HBox alignment="CENTER" spacing="15.0">
+                     <padding>
+                        <Insets bottom="10.0" top="10.0" />
+                     </padding>
+                     <children>
+                        <Button onAction="#handleDownloadShared" text="Download Shared Result" />
+                     </children>
+                  </HBox>
+              </VBox>
+            </content>
+          </Tab>
+        </tabs>
+      </TabPane>
    </center>
    <bottom>
       <VBox spacing="10">
           <padding>
-            <Insets bottom="20.0" left="20.0" right="20.0" top="20.0" />
+            <Insets bottom="20.0" left="20.0" right="20.0" top="10.0" />
          </padding>
-          <HBox alignment="CENTER" spacing="15.0">
-             <children>
-                <Button onAction="#handleUpload" text="Upload File" />
-                <Button onAction="#handleDownload" text="Download" />
-                <Button onAction="#handleDelete" text="Delete" style="-fx-background-color: #d32f2f;" />
-             </children>
-          </HBox>
           <javafx.scene.control.ProgressBar fx:id="progressBar" maxWidth="Infinity" visible="false" progress="0.0"/>
       </VBox>
    </bottom>

@@ -44,4 +44,52 @@ public class CryptoUtilsTest {
         
         assertArrayEquals(key1.getEncoded(), key2.getEncoded(), "Same password and salt should generate same key");
     }
+
+    @Test
+    void testRsaKeyPairGeneration() {
+        java.security.KeyPair keyPair = CryptoUtils.generateRsaKeyPair();
+        assertNotNull(keyPair, "KeyPair should not be null");
+        assertNotNull(keyPair.getPublic(), "PublicKey should not be null");
+        assertNotNull(keyPair.getPrivate(), "PrivateKey should not be null");
+        assertEquals("RSA", keyPair.getPublic().getAlgorithm(), "Algorithm should be RSA");
+    }
+
+    @Test
+    void testWrapAndUnwrapFek() throws Exception {
+        java.security.KeyPair keyPair = CryptoUtils.generateRsaKeyPair();
+        SecretKey fek = CryptoUtils.generateFileKey();
+
+        byte[] wrapped = CryptoUtils.wrapKey(fek, keyPair.getPublic());
+        assertNotNull(wrapped, "Wrapped key should not be null");
+
+        SecretKey unwrappedFek = CryptoUtils.unwrapKey(wrapped, keyPair.getPrivate());
+        assertNotNull(unwrappedFek, "Unwrapped key should not be null");
+        assertArrayEquals(fek.getEncoded(), unwrappedFek.getEncoded(), "Unwrapped key should match original FEK");
+    }
+
+    @Test
+    void testEncryptAndDecryptPrivateKey() {
+        java.security.KeyPair keyPair = CryptoUtils.generateRsaKeyPair();
+        SecretKey masterKey = CryptoUtils.generateKeyFromPassword("password".toCharArray(), CryptoUtils.generateSalt());
+
+        byte[] encryptedPkcs8 = CryptoUtils.encryptPrivateKey(keyPair.getPrivate(), masterKey);
+        assertNotNull(encryptedPkcs8, "Encrypted private key bytes should not be null");
+
+        java.security.PrivateKey decryptedKey = CryptoUtils.decryptPrivateKey(encryptedPkcs8, masterKey);
+        assertNotNull(decryptedKey, "Decrypted private key should not be null");
+        assertArrayEquals(keyPair.getPrivate().getEncoded(), decryptedKey.getEncoded(), "Decoded private key should match original");
+    }
+
+    @Test
+    void testEncryptWithCorruptedIv() {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "Top Secret".getBytes(StandardCharsets.UTF_8);
+        byte[] encrypted = CryptoUtils.encrypt(data, key);
+
+        // Corrupt IV (first 12 bytes)
+        encrypted[0] = (byte) ~encrypted[0];
+
+        assertThrows(RuntimeException.class, () -> CryptoUtils.decrypt(encrypted, key), 
+            "Decrypting with corrupted IV should throw an exception due to AEAD tag mismatch");
+    }
 }

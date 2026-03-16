@@ -14,12 +14,16 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.sql.SQLException;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class StorageServiceTest {
+
+    private static final String TEST_DB = "jdbc:h2:mem:test_storage_" +
+            System.nanoTime() + ";DB_CLOSE_DELAY=-1";  // Fix #12 — unique DB per class load
 
     private StorageService storageService;
     private User testUser;
@@ -27,36 +31,55 @@ public class StorageServiceTest {
     private File tempFile;
 
     @BeforeEach
-    void setUp() throws IOException {
-        DatabaseManager.setDbUrl("jdbc:h2:mem:test_storage;DB_CLOSE_DELAY=-1");
+    void setUp() throws Exception {
+        DatabaseManager.setDbUrl(TEST_DB);
         DatabaseManager.initializeDatabase();
+
+        // Fix #13 — always clean state before each test
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement()) {
+            stmt.execute("DELETE FROM FILES");
+            stmt.execute("DELETE FROM USERS");
+        }
+
         storageService = new StorageService();
 
-        testUser = new User("storage_user", new byte[0], CryptoUtils.generateSalt());
-        secretKey = CryptoUtils.generateKeyFromPassword("password".toCharArray(), testUser.getSalt());
-        
-        // Insert user into DB to satisfy foreign key constraint
-        new AuthService().register("storage_user", "password");
+        // Fix #3 — register user via AuthService so testUser.getSalt() matches the DB salt
+        String rawPassword = "password";
+        new AuthService().register("storage_user", rawPassword);
+
+        // Retrieve the salt that was actually stored
+        try (Connection conn = DatabaseManager.getConnection();
+             java.sql.PreparedStatement ps = conn.prepareStatement(
+                     "SELECT salt FROM USERS WHERE username = ?")) {
+            ps.setString(1, "storage_user");
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next(), "User must have been registered");
+                byte[] storedSalt = rs.getBytes("salt");
+                testUser  = new User("storage_user", new byte[0], storedSalt);
+                secretKey = CryptoUtils.generateKeyFromPassword(
+                        rawPassword.toCharArray(), storedSalt);
+            }
+        }
 
         tempFile = File.createTempFile("testfile", ".txt");
         Files.writeString(tempFile.toPath(), "Secret Content");
     }
 
     @AfterEach
-    void tearDown() throws SQLException, IOException {
+    void tearDown() throws Exception {
         tempFile.delete();
-        
-        // Clean up DB
-        try (java.sql.Connection conn = DatabaseManager.getConnection();
-             java.sql.Statement stmt = conn.createStatement()) {
+
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement()) {
             stmt.execute("DELETE FROM FILES");
             stmt.execute("DELETE FROM USERS");
         }
-        
-        // Clean up disk storage
-        Path userDir = Paths.get(System.getProperty("user.home"), ".securestorage", "storage_user");
+
+        Path userDir = Paths.get(System.getProperty("user.home"),
+                ".securestorage", "storage_user");
         if (Files.exists(userDir)) {
-            try (java.util.stream.Stream<Path> stream = Files.walk(userDir)) {
+            try (var stream = Files.walk(userDir)) {
                 stream.sorted(java.util.Comparator.reverseOrder())
                       .map(Path::toFile)
                       .forEach(File::delete);
@@ -79,12 +102,13 @@ public class StorageServiceTest {
         FileMetadata meta = storageService.listFiles(testUser).get(0);
 
         File destFile = File.createTempFile("downloaded", ".txt");
-        storageService.downloadFile(meta, testUser, secretKey, destFile);
-
-        String content = Files.readString(destFile.toPath());
-        assertEquals("Secret Content", content, "Downloaded content should match original");
-        
-        destFile.delete();
+        try {
+            storageService.downloadFile(meta, testUser, secretKey, destFile);
+            String content = Files.readString(destFile.toPath());
+            assertEquals("Secret Content", content, "Downloaded content should match original");
+        } finally {
+            destFile.delete();
+        }
     }
 
     @Test
@@ -96,5 +120,68 @@ public class StorageServiceTest {
 
         List<FileMetadata> files = storageService.listFiles(testUser);
         assertTrue(files.isEmpty(), "File list should be empty after delete");
+    }
+    
+    @Test
+    void testUploadFile_LargeSize() throws Exception {
+        // Create a 2MB file
+        File largeFile = File.createTempFile("largefile", ".dat");
+        try {
+            byte[] largeData = new byte[2 * 1024 * 1024];
+            new java.security.SecureRandom().nextBytes(largeData);
+            Files.write(largeFile.toPath(), largeData);
+
+            storageService.uploadFile(largeFile, testUser, secretKey);
+
+            List<FileMetadata> files = storageService.listFiles(testUser);
+            assertEquals(1, files.size());
+            FileMetadata meta = files.get(0);
+
+            File destFile = File.createTempFile("large_downloaded", ".dat");
+            try {
+                storageService.downloadFile(meta, testUser, secretKey, destFile);
+                byte[] downloadedData = Files.readAllBytes(destFile.toPath());
+                assertArrayEquals(largeData, downloadedData, "Large file content should match exactly");
+            } finally {
+                destFile.delete();
+            }
+        } finally {
+            largeFile.delete();
+        }
+    }
+
+    @Test
+    void testDownloadFile_FileNotFoundOnDisk() throws Exception {
+        storageService.uploadFile(tempFile, testUser, secretKey);
+        FileMetadata meta = storageService.listFiles(testUser).get(0);
+
+        // Physically delete the file to simulate corruption/loss
+        Path storedFile = Paths.get(System.getProperty("user.home"), ".securestorage", 
+                testUser.getUsername(), meta.getId() + ".enc");
+        Files.deleteIfExists(storedFile);
+
+        File destFile = File.createTempFile("fail", ".txt");
+        try {
+            assertThrows(IOException.class, () -> {
+                storageService.downloadFile(meta, testUser, secretKey, destFile);
+            }, "Should throw IOException if physical file is missing");
+        } finally {
+            destFile.delete();
+        }
+    }
+
+    @Test
+    void testDeleteFile_DeletesFromDiskAndDb() throws Exception {
+        storageService.uploadFile(tempFile, testUser, secretKey);
+        FileMetadata meta = storageService.listFiles(testUser).get(0);
+
+        Path storedFile = Paths.get(System.getProperty("user.home"), ".securestorage", 
+                testUser.getUsername(), meta.getId() + ".enc");
+        assertTrue(Files.exists(storedFile), "File should exist on disk before deletion");
+
+        storageService.deleteFile(meta, testUser);
+
+        assertFalse(Files.exists(storedFile), "File should be deleted from disk");
+        assertTrue(storageService.listFiles(testUser).isEmpty(), "File should be removed from DB");
     }
 }

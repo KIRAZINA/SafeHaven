@@ -3,7 +3,9 @@ package com.safehaven.ui;
 import com.safehaven.MainApp;
 import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.model.FileMetadata;
+import com.safehaven.model.SharedFileEntry;
 import com.safehaven.model.User;
+import com.safehaven.service.ShareService;
 import com.safehaven.service.StorageService;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleLongProperty;
@@ -20,68 +22,110 @@ import javafx.stage.FileChooser;
 
 import javax.crypto.SecretKey;
 import java.io.File;
+import java.security.PrivateKey;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainController {
 
-    @FXML
-    private TableView<FileMetadata> fileTable;
-    @FXML
-    private TableColumn<FileMetadata, String> filenameColumn;
-    @FXML
-    private TableColumn<FileMetadata, Number> sizeColumn;
-    @FXML
-    private TableColumn<FileMetadata, String> dateColumn;
-    @FXML
-    private Label welcomeLabel;
-    @FXML
-    private TextField searchField;
-    @FXML
-    private ProgressBar progressBar;
+    // General UI
+    @FXML private Label welcomeLabel;
+    @FXML private TextField searchField;
+    @FXML private ProgressBar progressBar;
+    @FXML private TabPane tabPane;
+
+    // My Files Tab
+    @FXML private TableView<FileMetadata> fileTable;
+    @FXML private TableColumn<FileMetadata, String> filenameColumn;
+    @FXML private TableColumn<FileMetadata, Number> sizeColumn;
+    @FXML private TableColumn<FileMetadata, String> dateColumn;
+
+    // Shared With Me Tab
+    @FXML private TableView<SharedFileEntry> sharedTable;
+    @FXML private TableColumn<SharedFileEntry, String> sharedFilenameColumn;
+    @FXML private TableColumn<SharedFileEntry, String> sharedFromColumn;
+    @FXML private TableColumn<SharedFileEntry, Number> sharedSizeColumn;
+    @FXML private TableColumn<SharedFileEntry, String> sharedDateColumn;
 
     private User currentUser;
     private SecretKey secretKey;
+    private PrivateKey privateKey; // Added: RSVP Private Key to unwrap shared FEKs
+
     private final StorageService storageService = new StorageService();
-    private final ObservableList<FileMetadata> masterData = FXCollections.observableArrayList();
-    private FilteredList<FileMetadata> filteredData;
+    private final ShareService shareService = new ShareService();
+
+    private final ObservableList<FileMetadata> myFilesData = FXCollections.observableArrayList();
+    private FilteredList<FileMetadata> filteredMyFilesData;
+
+    private final ObservableList<SharedFileEntry> sharedFilesData = FXCollections.observableArrayList();
+    private FilteredList<SharedFileEntry> filteredSharedFilesData;
+
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "safehaven-io");
+        t.setDaemon(true);
+        return t;
+    });
 
     public void initData(User user, char[] password) {
         this.currentUser = user;
+        // Derive master AES key
         this.secretKey = CryptoUtils.generateKeyFromPassword(password, user.getSalt());
         
+        // Decrypt the user's RSA private key
+        if (user.getEncryptedPrivateKey() != null) {
+            this.privateKey = CryptoUtils.decryptPrivateKey(user.getEncryptedPrivateKey(), this.secretKey);
+        }
+
+        Arrays.fill(password, '\0');
+
         welcomeLabel.setText("Welcome, " + user.getUsername());
-        
-        setupTable();
+
+        setupTables();
         setupSearch();
         refreshFileList();
+        refreshSharedFileList();
         setupDragAndDrop();
     }
 
-    private void setupTable() {
-        filenameColumn.setCellValueFactory(cellData -> new SimpleStringProperty(cellData.getValue().getFilename()));
-        sizeColumn.setCellValueFactory(cellData -> new SimpleLongProperty(cellData.getValue().getOriginalSize()));
-        dateColumn.setCellValueFactory(cellData -> {
-            Date date = new Date(cellData.getValue().getTimestamp());
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-            return new SimpleStringProperty(sdf.format(date));
-        });
-        
-        filteredData = new FilteredList<>(masterData, p -> true);
-        fileTable.setItems(filteredData);
+    private void setupTables() {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+        // My Files Table
+        filenameColumn.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().getFilename()));
+        sizeColumn.setCellValueFactory(cd -> new SimpleLongProperty(cd.getValue().getOriginalSize()));
+        dateColumn.setCellValueFactory(cd -> new SimpleStringProperty(sdf.format(new Date(cd.getValue().getTimestamp()))));
+
+        filteredMyFilesData = new FilteredList<>(myFilesData, p -> true);
+        fileTable.setItems(filteredMyFilesData);
+
+        // Shared Table
+        sharedFilenameColumn.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().getFilename()));
+        sharedFromColumn.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().getFromUser()));
+        sharedSizeColumn.setCellValueFactory(cd -> new SimpleLongProperty(cd.getValue().getOriginalSize()));
+        sharedDateColumn.setCellValueFactory(cd -> new SimpleStringProperty(sdf.format(new Date(cd.getValue().getTimestamp()))));
+
+        filteredSharedFilesData = new FilteredList<>(sharedFilesData, p -> true);
+        sharedTable.setItems(filteredSharedFilesData);
     }
-    
+
     private void setupSearch() {
-        searchField.textProperty().addListener((observable, oldValue, newValue) -> {
-            filteredData.setPredicate(file -> {
-                if (newValue == null || newValue.isEmpty()) {
-                    return true;
-                }
-                String lowerCaseFilter = newValue.toLowerCase();
-                return file.getFilename().toLowerCase().contains(lowerCaseFilter);
-            });
+        searchField.textProperty().addListener((obs, oldVal, newVal) -> {
+            String lowerCaseFilter = (newVal == null) ? "" : newVal.toLowerCase();
+            
+            filteredMyFilesData.setPredicate(file -> 
+                lowerCaseFilter.isEmpty() || file.getFilename().toLowerCase().contains(lowerCaseFilter)
+            );
+            
+            filteredSharedFilesData.setPredicate(entry -> 
+                lowerCaseFilter.isEmpty() || 
+                entry.getFilename().toLowerCase().contains(lowerCaseFilter) ||
+                entry.getFromUser().toLowerCase().contains(lowerCaseFilter)
+            );
         });
     }
 
@@ -108,11 +152,16 @@ public class MainController {
     }
 
     private void refreshFileList() {
-        // Run on background thread? Not strictly necessary for simple DB select but good practice.
-        // For now, keep simple on UI thread as it's fast H2 select.
         List<FileMetadata> files = storageService.listFiles(currentUser);
-        masterData.setAll(files);
+        Platform.runLater(() -> myFilesData.setAll(files));
     }
+
+    private void refreshSharedFileList() {
+        List<SharedFileEntry> shares = shareService.listSharedWithMe(currentUser);
+        Platform.runLater(() -> sharedFilesData.setAll(shares));
+    }
+
+    // ─── My Files Actions ───────────────────────────────────────────────────
 
     @FXML
     private void handleUpload() {
@@ -123,55 +172,48 @@ public class MainController {
             uploadFile(file);
         }
     }
-    
+
     private void uploadFile(File file) {
         Task<Void> task = new Task<>() {
             @Override
             protected Void call() throws Exception {
-                // Determine step size roughly? 
-                // StorageService doesn't report progress yet.
-                // We'll set indeterminate for now.
-                updateProgress(-1, 1); 
+                updateProgress(-1, 1);
                 storageService.uploadFile(file, currentUser, secretKey);
                 return null;
             }
         };
-
         bindProgress(task);
-        
         task.setOnSucceeded(e -> {
             unbindProgress();
             refreshFileList();
-            showAlert("Success", "File uploaded successfully.");
+            showAlert(Alert.AlertType.INFORMATION, "Готово", "Файл успешно загружен.");
         });
-
         task.setOnFailed(e -> {
             unbindProgress();
             Throwable ex = task.getException();
-            ex.printStackTrace();
-            showAlert("Upload Failed", "Could not upload file: " + ex.getMessage());
+            showAlert(Alert.AlertType.ERROR, "Ошибка загрузки", "Не удалось загрузить файл: " + ex.getMessage());
         });
-
-        new Thread(task).start();
+        executor.submit(task);
     }
 
     @FXML
     private void handleDownload() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
-        if (selected != null) {
-            FileChooser fileChooser = new FileChooser();
-            fileChooser.setTitle("Save File");
-            fileChooser.setInitialFileName(selected.getFilename());
-            File dest = fileChooser.showSaveDialog(fileTable.getScene().getWindow());
-            if (dest != null) {
-                downloadFile(selected, dest);
-            }
-        } else {
-            showAlert("Warning", "Please select a file to download.");
+        if (selected == null) {
+            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл для скачивания.");
+            return;
+        }
+
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Save File");
+        fileChooser.setInitialFileName(selected.getFilename());
+        File dest = fileChooser.showSaveDialog(fileTable.getScene().getWindow());
+        if (dest != null) {
+            downloadMyFile(selected, dest);
         }
     }
-    
-    private void downloadFile(FileMetadata meta, File dest) {
+
+    private void downloadMyFile(FileMetadata meta, File dest) {
         Task<Void> task = new Task<>() {
             @Override
             protected Void call() throws Exception {
@@ -180,42 +222,37 @@ public class MainController {
                 return null;
             }
         };
-
         bindProgress(task);
-
         task.setOnSucceeded(e -> {
             unbindProgress();
-            showAlert("Success", "File downloaded successfully.");
+            showAlert(Alert.AlertType.INFORMATION, "Готово", "Файл успешно скачан.");
         });
-
         task.setOnFailed(e -> {
             unbindProgress();
-            Throwable ex = task.getException();
-            ex.printStackTrace();
-            showAlert("Download Failed", "Could not download file: " + ex.getMessage());
+            showAlert(Alert.AlertType.ERROR, "Ошибка скачивания", "Не удалось скачать файл: " + task.getException().getMessage());
         });
-
-        new Thread(task).start();
+        executor.submit(task);
     }
 
     @FXML
     private void handleDelete() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
-        if (selected != null) {
-            Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-            alert.setTitle("Confirm Delete");
-            alert.setHeaderText("Are you sure you want to delete this file?");
-            alert.setContentText(selected.getFilename());
+        if (selected == null) {
+            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл для удаления.");
+            return;
+        }
 
-            Optional<ButtonType> result = alert.showAndWait();
-            if (result.isPresent() && result.get() == ButtonType.OK) {
-                deleteFile(selected);
-            }
-        } else {
-            showAlert("Warning", "Please select a file to delete.");
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.setTitle("Подтверждение удаления");
+        confirm.setHeaderText("Вы уверены, что хотите удалить этот файл?");
+        confirm.setContentText(selected.getFilename());
+
+        Optional<ButtonType> result = confirm.showAndWait();
+        if (result.isPresent() && result.get() == ButtonType.OK) {
+            deleteFile(selected);
         }
     }
-    
+
     private void deleteFile(FileMetadata meta) {
         Task<Void> task = new Task<>() {
             @Override
@@ -225,46 +262,141 @@ public class MainController {
                 return null;
             }
         };
-        
         bindProgress(task);
-
         task.setOnSucceeded(e -> {
             unbindProgress();
             refreshFileList();
         });
-
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert("Delete Failed", "Could not delete file: " + task.getException().getMessage());
+            showAlert(Alert.AlertType.ERROR, "Ошибка удаления", "Не удалось удалить файл: " + task.getException().getMessage());
         });
+        executor.submit(task);
+    }
 
-        new Thread(task).start();
+    @FXML
+    private void handleShare() {
+        FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл, которым хотите поделиться.");
+            return;
+        }
+
+        TextInputDialog dialog = new TextInputDialog("");
+        dialog.setTitle("Поделиться файлом");
+        dialog.setHeaderText("Кому отправить: " + selected.getFilename());
+        dialog.setContentText("Имя пользователя (username):");
+
+        Optional<String> result = dialog.showAndWait();
+        if (result.isPresent() && !result.get().trim().isEmpty()) {
+            String recipient = result.get().trim();
+            shareFile(selected, recipient);
+        }
     }
-    
+
+    private void shareFile(FileMetadata meta, String recipient) {
+        Task<Void> task = new Task<>() {
+            @Override
+            protected Void call() throws Exception {
+                updateProgress(-1, 1);
+                shareService.shareFile(meta, recipient, currentUser, secretKey);
+                return null;
+            }
+        };
+        bindProgress(task);
+        task.setOnSucceeded(e -> {
+            unbindProgress();
+            showAlert(Alert.AlertType.INFORMATION, "Успех", "Файл успешно отправлен пользователю " + recipient + ".");
+        });
+        task.setOnFailed(e -> {
+            unbindProgress();
+            showAlert(Alert.AlertType.ERROR, "Ошибка отправки", "Не удалось поделиться файлом: " + task.getException().getMessage());
+        });
+        executor.submit(task);
+    }
+
+    // ─── Shared With Me Actions ─────────────────────────────────────────────
+
+    @FXML
+    private void handleDownloadShared() {
+        SharedFileEntry selected = sharedTable.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл для скачивания.");
+            return;
+        }
+        
+        if (privateKey == null) {
+            showAlert(Alert.AlertType.ERROR, "Ошибка", "У вашего аккаунта нет RSA-ключей. Скачивание невозможно.");
+            return;
+        }
+
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Save Shared File");
+        fileChooser.setInitialFileName(selected.getFilename());
+        File dest = fileChooser.showSaveDialog(sharedTable.getScene().getWindow());
+        if (dest != null) {
+            downloadSharedFile(selected, dest);
+        }
+    }
+
+    private void downloadSharedFile(SharedFileEntry entry, File dest) {
+        Task<Void> task = new Task<>() {
+            @Override
+            protected Void call() throws Exception {
+                updateProgress(-1, 1);
+                shareService.downloadSharedFile(entry, privateKey, dest);
+                return null;
+            }
+        };
+        bindProgress(task);
+        task.setOnSucceeded(e -> {
+            unbindProgress();
+            showAlert(Alert.AlertType.INFORMATION, "Готово", "Входящий файл успешно скачан.");
+        });
+        task.setOnFailed(e -> {
+            unbindProgress();
+            showAlert(Alert.AlertType.ERROR, "Ошибка скачивания", "Не удалось скачать файл: " + task.getException().getMessage());
+        });
+        executor.submit(task);
+    }
+
+    // ─── Utilities ──────────────────────────────────────────────────────────
+
     private void bindProgress(Task<?> task) {
-        progressBar.setVisible(true);
-        progressBar.progressProperty().bind(task.progressProperty());
-        fileTable.setDisable(true); // Disable table during operation
+        Platform.runLater(() -> {
+            progressBar.setVisible(true);
+            progressBar.progressProperty().bind(task.progressProperty());
+            tabPane.setDisable(true); // Disable entire UI during operation
+        });
     }
-    
+
     private void unbindProgress() {
-        progressBar.setVisible(false);
-        progressBar.progressProperty().unbind();
-        progressBar.setProgress(0);
-        fileTable.setDisable(false);
+        Platform.runLater(() -> {
+            progressBar.setVisible(false);
+            progressBar.progressProperty().unbind();
+            progressBar.setProgress(0);
+            tabPane.setDisable(false);
+        });
     }
 
     @FXML
     private void handleLogout() throws Exception {
+        if (secretKey != null) {
+            try { secretKey.destroy(); } catch (javax.security.auth.DestroyFailedException ignored) {}
+        }
+        if (privateKey != null) {
+            try { privateKey.destroy(); } catch (javax.security.auth.DestroyFailedException ignored) {}
+        }
+        executor.shutdown();
         this.secretKey = null;
+        this.privateKey = null;
         this.currentUser = null;
         MainApp.setRoot("ui/login");
     }
 
-    private void showAlert(String title, String content) {
-        // Alerts must be on FX thread
+    private void showAlert(Alert.AlertType type, String title, String content) {
         Platform.runLater(() -> {
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            Alert alert = new Alert(type);
             alert.setTitle(title);
             alert.setHeaderText(null);
             alert.setContentText(content);
