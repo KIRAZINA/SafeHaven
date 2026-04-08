@@ -28,7 +28,7 @@ public class LoginController {
         String password = passwordField.getText();
 
         if (username.isEmpty() || password.isEmpty()) {
-            showAlert(Alert.AlertType.ERROR, "Ошибка", "Введите имя пользователя и пароль.");
+            showAlert(Alert.AlertType.ERROR, "Error", "Please enter username and password.");
             return;
         }
 
@@ -47,7 +47,7 @@ public class LoginController {
                 Arrays.fill(passwordChars, '\0');  // Fix #2 — clear password from memory
             }
         } else {
-            showAlert(Alert.AlertType.ERROR, "Ошибка входа", "Неверное имя пользователя или пароль.");
+            showAlert(Alert.AlertType.ERROR, "Login Error", "Invalid username or password.");
         }
     }
 
@@ -57,14 +57,14 @@ public class LoginController {
         String password = passwordField.getText();
 
         if (username.isEmpty() || password.isEmpty()) {
-            showAlert(Alert.AlertType.ERROR, "Ошибка", "Введите имя пользователя и пароль.");
+            showAlert(Alert.AlertType.ERROR, "Error", "Please enter username and password.");
             return;
         }
 
         if (authService.register(username, password)) {
-            showAlert(Alert.AlertType.INFORMATION, "Готово", "Регистрация выполнена. Войдите в систему.");
+            showAlert(Alert.AlertType.INFORMATION, "Done", "Registration successful. Please log in.");
         } else {
-            showAlert(Alert.AlertType.ERROR, "Ошибка", "Регистрация не выполнена — имя пользователя уже занято.");
+            showAlert(Alert.AlertType.ERROR, "Error", "Registration failed — username already exists.");
         }
     }
 

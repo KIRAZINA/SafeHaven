@@ -186,12 +186,12 @@ public class MainController {
         task.setOnSucceeded(e -> {
             unbindProgress();
             refreshFileList();
-            showAlert(Alert.AlertType.INFORMATION, "Готово", "Файл успешно загружен.");
+            showAlert(Alert.AlertType.INFORMATION, "Done", "File uploaded successfully.");
         });
         task.setOnFailed(e -> {
             unbindProgress();
             Throwable ex = task.getException();
-            showAlert(Alert.AlertType.ERROR, "Ошибка загрузки", "Не удалось загрузить файл: " + ex.getMessage());
+            showAlert(Alert.AlertType.ERROR, "Upload Error", "Failed to upload file: " + ex.getMessage());
         });
         executor.submit(task);
     }
@@ -200,7 +200,7 @@ public class MainController {
     private void handleDownload() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл для скачивания.");
+            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to download.");
             return;
         }
 
@@ -225,11 +225,11 @@ public class MainController {
         bindProgress(task);
         task.setOnSucceeded(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.INFORMATION, "Готово", "Файл успешно скачан.");
+            showAlert(Alert.AlertType.INFORMATION, "Done", "File downloaded successfully.");
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Ошибка скачивания", "Не удалось скачать файл: " + task.getException().getMessage());
+            showAlert(Alert.AlertType.ERROR, "Download Error", "Failed to download file: " + task.getException().getMessage());
         });
         executor.submit(task);
     }
@@ -238,13 +238,13 @@ public class MainController {
     private void handleDelete() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл для удаления.");
+            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to delete.");
             return;
         }
 
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
-        confirm.setTitle("Подтверждение удаления");
-        confirm.setHeaderText("Вы уверены, что хотите удалить этот файл?");
+        confirm.setTitle("Confirm Delete");
+        confirm.setHeaderText("Are you sure you want to delete this file?");
         confirm.setContentText(selected.getFilename());
 
         Optional<ButtonType> result = confirm.showAndWait();
@@ -269,7 +269,7 @@ public class MainController {
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Ошибка удаления", "Не удалось удалить файл: " + task.getException().getMessage());
+            showAlert(Alert.AlertType.ERROR, "Delete Error", "Failed to delete file: " + task.getException().getMessage());
         });
         executor.submit(task);
     }
@@ -278,14 +278,14 @@ public class MainController {
     private void handleShare() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл, которым хотите поделиться.");
+            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to share.");
             return;
         }
 
         TextInputDialog dialog = new TextInputDialog("");
-        dialog.setTitle("Поделиться файлом");
-        dialog.setHeaderText("Кому отправить: " + selected.getFilename());
-        dialog.setContentText("Имя пользователя (username):");
+        dialog.setTitle("Share File");
+        dialog.setHeaderText("Share with: " + selected.getFilename());
+        dialog.setContentText("Username:");
 
         Optional<String> result = dialog.showAndWait();
         if (result.isPresent() && !result.get().trim().isEmpty()) {
@@ -306,11 +306,11 @@ public class MainController {
         bindProgress(task);
         task.setOnSucceeded(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.INFORMATION, "Успех", "Файл успешно отправлен пользователю " + recipient + ".");
+            showAlert(Alert.AlertType.INFORMATION, "Success", "File successfully shared with " + recipient + ".");
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Ошибка отправки", "Не удалось поделиться файлом: " + task.getException().getMessage());
+            showAlert(Alert.AlertType.ERROR, "Share Error", "Failed to share file: " + task.getException().getMessage());
         });
         executor.submit(task);
     }
@@ -321,12 +321,12 @@ public class MainController {
     private void handleDownloadShared() {
         SharedFileEntry selected = sharedTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Предупреждение", "Выберите файл для скачивания.");
+            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to download.");
             return;
         }
         
         if (privateKey == null) {
-            showAlert(Alert.AlertType.ERROR, "Ошибка", "У вашего аккаунта нет RSA-ключей. Скачивание невозможно.");
+            showAlert(Alert.AlertType.ERROR, "Error", "Your account does not have RSA keys. Download is not possible.");
             return;
         }
 
@@ -351,11 +351,11 @@ public class MainController {
         bindProgress(task);
         task.setOnSucceeded(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.INFORMATION, "Готово", "Входящий файл успешно скачан.");
+            showAlert(Alert.AlertType.INFORMATION, "Done", "Shared file downloaded successfully.");
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Ошибка скачивания", "Не удалось скачать файл: " + task.getException().getMessage());
+            showAlert(Alert.AlertType.ERROR, "Download Error", "Failed to download file: " + task.getException().getMessage());
         });
         executor.submit(task);
     }
