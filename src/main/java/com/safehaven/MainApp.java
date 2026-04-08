@@ -12,11 +12,9 @@ import java.io.IOException;
 public class MainApp extends Application {
 
     private static Scene scene;
-    private static Stage primaryStage;
 
     @Override
     public void start(Stage stage) throws IOException {
-        primaryStage = stage;
         DatabaseManager.initializeDatabase();
         
         scene = new Scene(loadFXML("ui/login"), 640, 480);
