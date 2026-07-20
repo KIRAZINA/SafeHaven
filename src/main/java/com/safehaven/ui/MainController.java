@@ -5,6 +5,8 @@ import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.model.FileMetadata;
 import com.safehaven.model.SharedFileEntry;
 import com.safehaven.model.User;
+import com.safehaven.service.IShareService;
+import com.safehaven.service.IStorageService;
 import com.safehaven.service.ShareService;
 import com.safehaven.service.StorageService;
 import javafx.application.Platform;
@@ -56,8 +58,18 @@ public class MainController {
     private SecretKey secretKey;
     private PrivateKey privateKey; // Added: RSVP Private Key to unwrap shared FEKs
 
-    private final StorageService storageService = new StorageService();
-    private final ShareService shareService = new ShareService();
+    private IStorageService storageService = new StorageService();
+    private IShareService shareService = new ShareService();
+
+    /** For dependency injection (tests). */
+    public void setStorageService(IStorageService storageService) {
+        this.storageService = storageService;
+    }
+
+    /** For dependency injection (tests). */
+    public void setShareService(IShareService shareService) {
+        this.shareService = shareService;
+    }
 
     private final ObservableList<FileMetadata> myFilesData = FXCollections.observableArrayList();
     private FilteredList<FileMetadata> filteredMyFilesData;
@@ -65,7 +77,7 @@ public class MainController {
     private final ObservableList<SharedFileEntry> sharedFilesData = FXCollections.observableArrayList();
     private FilteredList<SharedFileEntry> filteredSharedFilesData;
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+    private final ExecutorService executor = Executors.newFixedThreadPool(4, r -> {
         Thread t = new Thread(r, "safehaven-io");
         t.setDaemon(true);
         return t;
@@ -74,7 +86,7 @@ public class MainController {
     public void initData(User user, char[] password) {
         this.currentUser = user;
         // Derive master AES key
-        this.secretKey = CryptoUtils.generateKeyFromPassword(password, user.getSalt());
+        this.secretKey = CryptoUtils.deriveMasterKey(password, user.getSalt());
         
         // Decrypt the user's RSA private key
         if (user.getEncryptedPrivateKey() != null) {

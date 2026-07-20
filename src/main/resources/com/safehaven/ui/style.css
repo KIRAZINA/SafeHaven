@@ -114,3 +114,24 @@
 .container {
     -fx-background-color: #1e1e1e;
 }
+
+/* Danger / Delete button */
+.button-danger {
+    -fx-background-color: #d32f2f;
+    -fx-text-fill: white;
+    -fx-background-radius: 5;
+    -fx-padding: 8 15 8 15;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.4), 5, 0, 0, 0);
+    -fx-font-weight: bold;
+}
+
+.button-danger:hover {
+    -fx-background-color: #f44336;
+    -fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.6), 8, 0, 0, 2);
+}
+
+.button-danger:pressed {
+    -fx-background-color: #b71c1c;
+    -fx-effect: innershadow(three-pass-box, rgba(0,0,0,0.4), 5, 0, 0, 0);
+}

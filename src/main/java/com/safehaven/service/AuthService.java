@@ -14,15 +14,20 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Arrays;
 
-public class AuthService {
+public class AuthService implements IAuthService {
     private static final Logger logger = LoggerFactory.getLogger(AuthService.class);
 
     public boolean register(String username, String password) {
         byte[] salt = CryptoUtils.generateSalt();
         char[] passwordChars = password.toCharArray();
         try {
-            SecretKey masterKey = CryptoUtils.generateKeyFromPassword(passwordChars, salt);
-            byte[] passwordHash = masterKey.getEncoded();
+            // Derive two independent values from the password + salt.
+            // The auth verifier is stored as password_hash and used only for login
+            // comparison. The master key is NEVER persisted — it encrypts the user's
+            // RSA private key and wraps every file's FEK.  Domain separation ensures
+            // that leaking password_hash alone does NOT reveal the master key.
+            byte[] passwordHash = CryptoUtils.deriveAuthVerifier(passwordChars, salt);
+            SecretKey masterKey = CryptoUtils.deriveMasterKey(passwordChars, salt);
 
             // Generate RSA key pair for secure file sharing
             KeyPair rsaPair = CryptoUtils.generateRsaKeyPair();
@@ -68,8 +73,8 @@ public class AuthService {
                     byte[] storedHash = rs.getBytes("password_hash");
                     byte[] salt = rs.getBytes("salt");
 
-                    SecretKey key = CryptoUtils.generateKeyFromPassword(passwordChars, salt);
-                    byte[] computedHash = key.getEncoded();
+                    // Compare using the AUTH verifier (NOT the master key)
+                    byte[] computedHash = CryptoUtils.deriveAuthVerifier(passwordChars, salt);
 
                     if (Arrays.equals(storedHash, computedHash)) {
                         byte[] pubKey = rs.getBytes("public_key");

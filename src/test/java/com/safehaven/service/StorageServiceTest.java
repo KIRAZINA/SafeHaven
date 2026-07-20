@@ -3,6 +3,7 @@ package com.safehaven.service;
 import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.db.DatabaseManager;
 import com.safehaven.model.FileMetadata;
+import com.safehaven.model.SharedFileEntry;
 import com.safehaven.model.User;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +16,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.List;
 
@@ -57,7 +60,7 @@ public class StorageServiceTest {
                 assertTrue(rs.next(), "User must have been registered");
                 byte[] storedSalt = rs.getBytes("salt");
                 testUser  = new User("storage_user", new byte[0], storedSalt);
-                secretKey = CryptoUtils.generateKeyFromPassword(
+                secretKey = CryptoUtils.deriveMasterKey(
                         rawPassword.toCharArray(), storedSalt);
             }
         }
@@ -123,6 +126,50 @@ public class StorageServiceTest {
     }
     
     @Test
+    void testDeleteTransactional_RemovesSharesAndFileAtomically() throws Exception {
+        // Register a second user and share the file with them
+        AuthService auth = new AuthService();
+        auth.register("recipient_user", "passwordR");
+
+        storageService.uploadFile(tempFile, testUser, secretKey);
+        FileMetadata meta = storageService.listFiles(testUser).get(0);
+
+        // Share the file
+        ShareService shareService = new ShareService();
+        shareService.shareFile(meta, "recipient_user", testUser, secretKey);
+
+        // Verify share exists
+        assertEquals(1, countSharesForFile(meta.getId()),
+                "Share record must exist before deletion");
+
+        // Delete the file
+        storageService.deleteFile(meta, testUser);
+
+        // Verify both file and share records are gone
+        assertTrue(storageService.listFiles(testUser).isEmpty(),
+                "File must be removed from FILES table");
+        assertEquals(0, countSharesForFile(meta.getId()),
+                "Share record must also be removed (same transaction)");
+
+        // Verify encrypted blob is gone from disk
+        Path storedFile = Paths.get(System.getProperty("user.home"),
+                ".securestorage", testUser.getUsername(), meta.getId() + ".enc");
+        assertFalse(Files.exists(storedFile),
+                "Encrypted file must be deleted from disk");
+    }
+
+    private int countSharesForFile(String fileId) throws Exception {
+        String sql = "SELECT COUNT(*) FROM SHARES WHERE file_id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, fileId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    @Test
     void testUploadFile_LargeSize() throws Exception {
         // Create a 2MB file
         File largeFile = File.createTempFile("largefile", ".dat");
@@ -167,6 +214,53 @@ public class StorageServiceTest {
             }, "Should throw IOException if physical file is missing");
         } finally {
             destFile.delete();
+        }
+    }
+
+    @Test
+    void testUploadDownload_ZeroByteFile() throws Exception {
+        File zeroFile = File.createTempFile("empty", ".txt");
+        try {
+            Files.write(zeroFile.toPath(), new byte[0]);
+            storageService.uploadFile(zeroFile, testUser, secretKey);
+            FileMetadata meta = storageService.listFiles(testUser).get(0);
+
+            File dest = File.createTempFile("empty_dl", ".txt");
+            try {
+                storageService.downloadFile(meta, testUser, secretKey, dest);
+                byte[] downloaded = Files.readAllBytes(dest.toPath());
+                assertEquals(0, downloaded.length, "Zero-byte file should download as empty");
+            } finally {
+                dest.delete();
+            }
+        } finally {
+            zeroFile.delete();
+        }
+    }
+
+    @Test
+    void testUploadDownload_LargeFile10MB() throws Exception {
+        int sizeMB = 10;
+        byte[] largeData = new byte[sizeMB * 1024 * 1024];
+        new java.security.SecureRandom().nextBytes(largeData);
+
+        File largeFile = File.createTempFile("large10MB", ".dat");
+        try {
+            Files.write(largeFile.toPath(), largeData);
+
+            storageService.uploadFile(largeFile, testUser, secretKey);
+            FileMetadata meta = storageService.listFiles(testUser).get(0);
+
+            File dest = File.createTempFile("large10MB_dl", ".dat");
+            try {
+                storageService.downloadFile(meta, testUser, secretKey, dest);
+                byte[] downloaded = Files.readAllBytes(dest.toPath());
+                assertArrayEquals(largeData, downloaded, "10MB file content should match exactly");
+            } finally {
+                dest.delete();
+            }
+        } finally {
+            largeFile.delete();
         }
     }
 

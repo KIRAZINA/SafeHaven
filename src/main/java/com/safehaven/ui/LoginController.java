@@ -2,6 +2,7 @@ package com.safehaven.ui;
 
 import com.safehaven.model.User;
 import com.safehaven.service.AuthService;
+import com.safehaven.service.IAuthService;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
@@ -20,7 +21,12 @@ public class LoginController {
     @FXML
     private PasswordField passwordField;
 
-    private final AuthService authService = new AuthService();
+    private IAuthService authService = new AuthService();
+
+    /** For dependency injection (tests). */
+    public void setAuthService(IAuthService authService) {
+        this.authService = authService;
+    }
 
     @FXML
     private void handleLogin() throws IOException {

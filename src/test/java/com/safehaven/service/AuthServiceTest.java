@@ -1,11 +1,16 @@
 package com.safehaven.service;
 
+import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.db.DatabaseManager;
 import com.safehaven.model.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.Statement;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -81,13 +86,59 @@ public class AuthServiceTest {
         assertNotNull(user.getEncryptedPrivateKey(), "Encrypted private key should be populated");
 
         // Verify private key can be decrypted with master key
-        javax.crypto.SecretKey masterKey = com.safehaven.crypto.CryptoUtils.generateKeyFromPassword(
+        javax.crypto.SecretKey masterKey = com.safehaven.crypto.CryptoUtils.deriveMasterKey(
                 password.toCharArray(), user.getSalt());
         java.security.PrivateKey privateKey = com.safehaven.crypto.CryptoUtils.decryptPrivateKey(
                 user.getEncryptedPrivateKey(), masterKey);
         
         assertNotNull(privateKey, "Private key should be successfully decrypted");
         assertEquals("RSA", privateKey.getAlgorithm(), "Should be an RSA key");
+    }
+
+    @Test
+    void testPasswordHash_CannotDecryptPrivateKey() throws Exception {
+        // Regression test for P0-1: the password_hash stored in the database
+        // (the auth verifier) MUST NOT be usable as a decryption key for the
+        // user's encrypted private key. Only the domain-separated master key
+        // should work.
+        String username = "verifier_is_not_mk";
+        String password = "mySecret123";
+
+        authService.register(username, password);
+
+        // Read the stored password_hash directly from the DB
+        String sql = "SELECT password_hash, salt, encrypted_private_key FROM USERS WHERE username = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, username);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                assertTrue(rs.next(), "User must exist");
+                byte[] storedHash = rs.getBytes("password_hash");
+                byte[] salt = rs.getBytes("salt");
+                byte[] encPrivKey = rs.getBytes("encrypted_private_key");
+
+                assertNotNull(storedHash, "password_hash must be present");
+                assertNotNull(encPrivKey, "encrypted_private_key must be present");
+
+                // Attempt to decrypt the private key using storedHash as an AES key
+                SecretKey forgedKey = new SecretKeySpec(storedHash, "AES");
+                assertThrows(Exception.class, () -> {
+                    CryptoUtils.decryptPrivateKey(encPrivKey, forgedKey);
+                }, "Decrypting private key with stored password_hash must fail");
+
+                // Verify the real master key still works
+                SecretKey realMasterKey = CryptoUtils.deriveMasterKey(password.toCharArray(), salt);
+                java.security.PrivateKey realPrivKey = CryptoUtils.decryptPrivateKey(encPrivKey, realMasterKey);
+                assertNotNull(realPrivKey, "Real master key must still decrypt the private key");
+                assertEquals("RSA", realPrivKey.getAlgorithm());
+            }
+        }
+    }
+
+    @Test
+    void testLogin_NonExistentUsername_returnsNull() {
+        User user = authService.login("nonexistent_user", "anyPassword");
+        assertNull(user, "Login for a nonexistent username should return null without throwing");
     }
 
     @Test

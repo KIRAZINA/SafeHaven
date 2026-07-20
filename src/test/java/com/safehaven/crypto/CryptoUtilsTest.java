@@ -2,8 +2,12 @@ package com.safehaven.crypto;
 
 import org.junit.jupiter.api.Test;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -70,7 +74,7 @@ public class CryptoUtilsTest {
     @Test
     void testEncryptAndDecryptPrivateKey() {
         java.security.KeyPair keyPair = CryptoUtils.generateRsaKeyPair();
-        SecretKey masterKey = CryptoUtils.generateKeyFromPassword("password".toCharArray(), CryptoUtils.generateSalt());
+        SecretKey masterKey = CryptoUtils.deriveMasterKey("password".toCharArray(), CryptoUtils.generateSalt());
 
         byte[] encryptedPkcs8 = CryptoUtils.encryptPrivateKey(keyPair.getPrivate(), masterKey);
         assertNotNull(encryptedPkcs8, "Encrypted private key bytes should not be null");
@@ -91,5 +95,113 @@ public class CryptoUtilsTest {
 
         assertThrows(RuntimeException.class, () -> CryptoUtils.decrypt(encrypted, key), 
             "Decrypting with corrupted IV should throw an exception due to AEAD tag mismatch");
+    }
+
+    @Test
+    void testDecryptWithWrongKey_throws() {
+        String originalText = "Secret message";
+        SecretKey originalKey = CryptoUtils.generateFileKey();
+        byte[] encrypted = CryptoUtils.encrypt(originalText.getBytes(StandardCharsets.UTF_8), originalKey);
+
+        SecretKey wrongKey = CryptoUtils.generateFileKey();
+        assertThrows(RuntimeException.class, () -> CryptoUtils.decrypt(encrypted, wrongKey),
+            "Decrypting with a different key should throw");
+    }
+
+    @Test
+    void testDifferentSalts_ProduceDifferentKeys() {
+        char[] password = "samePassword".toCharArray();
+        byte[] salt1 = new byte[16];
+        byte[] salt2 = new byte[16];
+        salt2[0] = 0x01;
+        Arrays.fill(salt1, (byte) 0);
+
+        SecretKey key1 = CryptoUtils.generateKeyFromPassword(password, salt1);
+        SecretKey key2 = CryptoUtils.generateKeyFromPassword(password, salt2);
+
+        assertFalse(Arrays.equals(key1.getEncoded(), key2.getEncoded()),
+            "Different salts must produce different keys for the same password");
+    }
+
+    @Test
+    void testUnwrapKey_WrongPrivateKey_throws() throws Exception {
+        KeyPair alicePair = CryptoUtils.generateRsaKeyPair();
+        KeyPair bobPair = CryptoUtils.generateRsaKeyPair();
+        SecretKey fek = CryptoUtils.generateFileKey();
+
+        byte[] wrapped = CryptoUtils.wrapKey(fek, alicePair.getPublic());
+
+        assertThrows(Exception.class, () -> CryptoUtils.unwrapKey(wrapped, bobPair.getPrivate()),
+            "Unwrapping with wrong private key should throw");
+    }
+
+    @Test
+    void testDecryptCorruptedCiphertext_throws() {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "Sensitive data".getBytes(StandardCharsets.UTF_8);
+        byte[] encrypted = CryptoUtils.encrypt(data, key);
+
+        // Corrupt a body byte (skip the 12-byte IV)
+        int bodyPos = 12 + 1;
+        encrypted[bodyPos] = (byte) ~encrypted[bodyPos];
+
+        assertThrows(RuntimeException.class, () -> CryptoUtils.decrypt(encrypted, key),
+            "Decrypting with corrupted ciphertext body should throw due to AEAD tag mismatch");
+    }
+
+    @Test
+    void testDecryptCorruptedAuthTag_throws() {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "Important data".getBytes(StandardCharsets.UTF_8);
+        byte[] encrypted = CryptoUtils.encrypt(data, key);
+
+        // Corrupt the last byte (part of the 128-bit auth tag appended by GCM)
+        encrypted[encrypted.length - 1] = (byte) ~encrypted[encrypted.length - 1];
+
+        assertThrows(RuntimeException.class, () -> CryptoUtils.decrypt(encrypted, key),
+            "Decrypting with corrupted auth tag should throw");
+    }
+
+    @Test
+    void testDecryptTruncatedCiphertext_throws() {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "Data".getBytes(StandardCharsets.UTF_8);
+        byte[] encrypted = CryptoUtils.encrypt(data, key);
+
+        // Truncate to fewer bytes than the IV length (triggers data.length < GCM_IV_LENGTH check)
+        byte[] truncated = Arrays.copyOf(encrypted, 11);
+
+        assertThrows(Exception.class, () -> CryptoUtils.decrypt(truncated, key),
+            "Decrypting data shorter than IV length should throw");
+    }
+
+    @Test
+    void testDecryptTruncatedToIvOnly_throws() {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "Data".getBytes(StandardCharsets.UTF_8);
+        byte[] encrypted = CryptoUtils.encrypt(data, key);
+
+        // Truncate to exactly the IV length (passes length check but fails in doFinal)
+        byte[] truncated = Arrays.copyOf(encrypted, 12);
+
+        assertThrows(Exception.class, () -> CryptoUtils.decrypt(truncated, key),
+            "Decrypting truncated ciphertext with only IV should throw");
+    }
+
+    @Test
+    void testIvUniqueness_AcrossEncryptions() {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "Same content".getBytes(StandardCharsets.UTF_8);
+        Set<String> seenIvs = new HashSet<>();
+        int count = 20;
+
+        for (int i = 0; i < count; i++) {
+            byte[] encrypted = CryptoUtils.encrypt(data, key);
+            byte[] iv = Arrays.copyOf(encrypted, 12);
+            seenIvs.add(Arrays.toString(iv));
+        }
+
+        assertEquals(count, seenIvs.size(),
+            "Each encryption must produce a unique IV (no duplicates in " + count + " encryptions)");
     }
 }

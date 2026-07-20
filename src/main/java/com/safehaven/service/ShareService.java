@@ -26,7 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-public class ShareService {
+public class ShareService implements IShareService {
     private static final Logger logger = LoggerFactory.getLogger(ShareService.class);
 
     /**

@@ -12,6 +12,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -21,19 +22,41 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import java.util.UUID;
 
-public class StorageService {
+public class StorageService implements IStorageService {
     private static final Logger logger = LoggerFactory.getLogger(StorageService.class);
-    static final String STORAGE_DIR =
-            System.getProperty("user.home") + "/.securestorage";
+    static final String STORAGE_DIR;
+
+    static {
+        Properties props = new Properties();
+        String dir = null;
+        try (InputStream in = StorageService.class
+                .getResourceAsStream("/application.properties")) {
+            if (in != null) {
+                props.load(in);
+                dir = props.getProperty("storage.dir");
+            }
+        } catch (IOException e) {
+            logger.warn("Could not load application.properties, using default storage dir", e);
+        }
+        if (dir == null || dir.isBlank()) {
+            dir = System.getProperty("user.home") + "/.securestorage";
+        }
+        // Resolve ${user.home} placeholder used in the default property value
+        if (dir.contains("${user.home}")) {
+            dir = dir.replace("${user.home}", System.getProperty("user.home"));
+        }
+        STORAGE_DIR = dir;
+    }
 
     public StorageService() {
-        File dir = new File(STORAGE_DIR);
-        if (!dir.exists()) {
-            if (!dir.mkdirs()) {
+        File dirFile = new File(STORAGE_DIR);
+        if (!dirFile.exists()) {
+            if (!dirFile.mkdirs()) {
                 throw new RuntimeException(
-                        "Cannot create storage directory: " + dir.getAbsolutePath());
+                        "Cannot create storage directory: " + dirFile.getAbsolutePath());
             }
         }
     }
@@ -129,32 +152,58 @@ public class StorageService {
     }
 
     public void deleteFile(FileMetadata meta, User user) {
+        try (Connection conn = DatabaseManager.getConnection()) {
+            deleteFileWithConnection(meta, user, conn);
+        } catch (SQLException e) {
+            logger.error("Failed to acquire connection for delete: {}", meta.getId(), e);
+            throw new RuntimeException("Failed to delete file record", e);
+        }
+    }
+
+    /**
+     * Test-only seam: performs the transactional delete using a caller-provided
+     * Connection so tests can inject spy/mock connections to verify rollback.
+     * The caller is responsible for closing the connection.
+     */
+    public void deleteFileWithConnection(FileMetadata meta, User user, Connection conn) {
         Path path = Paths.get(STORAGE_DIR, user.getUsername(), meta.getId() + ".enc");
         try {
-            Files.deleteIfExists(path);
-        } catch (IOException e) {
-            logger.error("Could not delete file from disk: {}", path, e);
-            throw new RuntimeException("Failed to delete file from disk", e);
-        }
+            conn.setAutoCommit(false);
 
-        // Delete from SHARES first to avoid constraint violation
-        String sqlShares = "DELETE FROM SHARES WHERE file_id = ?";
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sqlShares)) {
-            pstmt.setString(1, meta.getId());
-            pstmt.executeUpdate();
-        } catch (SQLException e) {
-            logger.error("Failed to remove shares from DB: {}", meta.getId(), e);
-        }
+            // Delete DB rows FIRST so that a crash between DB and disk
+            // leaves an orphaned blob (recoverable) rather than DB rows
+            // pointing to a missing file (unrecoverable data loss).
 
-        String sql = "DELETE FROM FILES WHERE id = ? AND owner = ?";
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, meta.getId());
-            pstmt.setString(2, user.getUsername());
-            pstmt.executeUpdate();
+            // 1. Delete from SHARES first to avoid FK constraint violation
+            String sqlShares = "DELETE FROM SHARES WHERE file_id = ?";
+            try (PreparedStatement pstmt = conn.prepareStatement(sqlShares)) {
+                pstmt.setString(1, meta.getId());
+                pstmt.executeUpdate();
+            }
+
+            // 2. Delete from FILES
+            String sqlFiles = "DELETE FROM FILES WHERE id = ? AND owner = ?";
+            try (PreparedStatement pstmt = conn.prepareStatement(sqlFiles)) {
+                pstmt.setString(1, meta.getId());
+                pstmt.setString(2, user.getUsername());
+                pstmt.executeUpdate();
+            }
+
+            // 3. Delete the physical encrypted blob
+            try {
+                Files.deleteIfExists(path);
+            } catch (IOException e) {
+                // If disk deletion fails, rollback the DB changes so the
+                // file record remains intact.
+                conn.rollback();
+                logger.error("Could not delete file from disk: {}", path, e);
+                throw new RuntimeException("Failed to delete file from disk", e);
+            }
+
+            conn.commit();
         } catch (SQLException e) {
-            logger.error("Failed to remove file record from DB: {}", meta.getId(), e);
+            logger.error("Failed to delete file record from DB: {}", meta.getId(), e);
+            try { conn.rollback(); } catch (SQLException ignored) {}
             throw new RuntimeException("Failed to delete file record", e);
         }
     }

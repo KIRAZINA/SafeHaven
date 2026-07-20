@@ -7,6 +7,7 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -29,6 +30,8 @@ public class CryptoUtils {
     private static final int    GCM_TAG_LENGTH = 128;
     private static final int    PBKDF2_ITERATIONS = 65536;
     private static final int    SALT_LENGTH    = 16;
+    private static final String AUTH_DOMAIN    = "safehaven-auth-v1";
+    private static final String MASTER_KEY_DOMAIN = "safehaven-mk-v1";
 
     // ── Password / Master key ────────────────────────────────────────────────
 
@@ -47,6 +50,46 @@ public class CryptoUtils {
         } catch (Exception e) {
             throw new RuntimeException("Error generating key from password", e);
         }
+    }
+
+    /**
+     * Derives a 256-bit authentication verifier from password + salt using
+     * domain-separated PBKDF2. The verifier is used ONLY for login comparison
+     * and is stored as USERS.password_hash. It CANNOT be used as an encryption
+     * key — that would require the separately-derived master key.
+     */
+    public static byte[] deriveAuthVerifier(char[] password, byte[] salt) {
+        try {
+            byte[] domainSalt = concat(AUTH_DOMAIN.getBytes(StandardCharsets.UTF_8), salt);
+            SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            KeySpec spec = new PBEKeySpec(password, domainSalt, PBKDF2_ITERATIONS, AES_KEY_SIZE);
+            return factory.generateSecret(spec).getEncoded();
+        } catch (Exception e) {
+            throw new RuntimeException("Error deriving auth verifier", e);
+        }
+    }
+
+    /**
+     * Derives the AES-256 master encryption key from password + salt using
+     * domain-separated PBKDF2. This key encrypts the user's RSA private key
+     * and wraps every file's FEK. It is NEVER stored in the database.
+     */
+    public static SecretKey deriveMasterKey(char[] password, byte[] salt) {
+        try {
+            byte[] domainSalt = concat(MASTER_KEY_DOMAIN.getBytes(StandardCharsets.UTF_8), salt);
+            SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            KeySpec spec = new PBEKeySpec(password, domainSalt, PBKDF2_ITERATIONS, AES_KEY_SIZE);
+            SecretKey secret = factory.generateSecret(spec);
+            return new SecretKeySpec(secret.getEncoded(), "AES");
+        } catch (Exception e) {
+            throw new RuntimeException("Error deriving master key", e);
+        }
+    }
+
+    private static byte[] concat(byte[] a, byte[] b) {
+        byte[] result = Arrays.copyOf(a, a.length + b.length);
+        System.arraycopy(b, 0, result, a.length, b.length);
+        return result;
     }
 
     // ── Symmetric AES-GCM ────────────────────────────────────────────────────

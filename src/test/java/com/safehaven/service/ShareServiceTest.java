@@ -62,10 +62,10 @@ public class ShareServiceTest {
 
         // Login to get full loaded user objects including public/private keys
         alice = authService.login("alice", "passwordA");
-        aliceMasterKey = CryptoUtils.generateKeyFromPassword("passwordA".toCharArray(), alice.getSalt());
+        aliceMasterKey = CryptoUtils.deriveMasterKey("passwordA".toCharArray(), alice.getSalt());
 
         bob = authService.login("bob", "passwordB");
-        bobMasterKey = CryptoUtils.generateKeyFromPassword("passwordB".toCharArray(), bob.getSalt());
+        bobMasterKey = CryptoUtils.deriveMasterKey("passwordB".toCharArray(), bob.getSalt());
         bobPrivateKey = CryptoUtils.decryptPrivateKey(bob.getEncryptedPrivateKey(), bobMasterKey);
 
         tempFile = File.createTempFile("test_share", ".txt");
@@ -154,7 +154,7 @@ public class ShareServiceTest {
         // Register and login Charlie
         authService.register("charlie", "passwordC");
         User charlie = authService.login("charlie", "passwordC");
-        SecretKey charlieMasterKey = CryptoUtils.generateKeyFromPassword("passwordC".toCharArray(), charlie.getSalt());
+        SecretKey charlieMasterKey = CryptoUtils.deriveMasterKey("passwordC".toCharArray(), charlie.getSalt());
         PrivateKey charliePrivateKey = CryptoUtils.decryptPrivateKey(charlie.getEncryptedPrivateKey(), charlieMasterKey);
 
         storageService.uploadFile(tempFile, alice, aliceMasterKey);
