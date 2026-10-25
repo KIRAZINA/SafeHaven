@@ -100,6 +100,79 @@ public class StorageServiceTest {
     }
 
     @Test
+    void listFilesPaginated_ReturnsPagesNewestFirst() throws Exception {
+        for (int i = 1; i <= 5; i++) {
+            insertFile("page-file-" + i, "report-" + i + ".txt", "storage_user", 1_000L + i);
+        }
+
+        assertEquals(List.of("report-5.txt", "report-4.txt"),
+                filenames(storageService.listFilesPaginated(testUser, 2, 0)),
+                "First page must contain the two newest files");
+        assertEquals(List.of("report-3.txt", "report-2.txt"),
+                filenames(storageService.listFilesPaginated(testUser, 2, 2)),
+                "Offset must skip the first page");
+        assertEquals(List.of("report-1.txt"),
+                filenames(storageService.listFilesPaginated(testUser, 2, 4)),
+                "Last page may contain fewer than limit rows");
+        assertTrue(storageService.listFilesPaginated(testUser, 2, 6).isEmpty(),
+                "An offset past the end must return an empty page");
+    }
+
+    @Test
+    void getFileCount_CountsOnlyTheUsersFiles() throws Exception {
+        new AuthService().register("other_user", "passwordO");
+        insertFile("owned-1", "a.txt", "storage_user", 10L);
+        insertFile("owned-2", "b.txt", "storage_user", 20L);
+        insertFile("foreign-1", "c.txt", "other_user", 30L);
+
+        assertEquals(2L, storageService.getFileCount(testUser),
+                "Count must exclude files owned by other users");
+    }
+
+    @Test
+    void getFileCount_ReturnsZeroForEmptyList() throws Exception {
+        assertEquals(0L, storageService.getFileCount(testUser));
+        assertTrue(storageService.listFilesPaginated(testUser, 10, 0).isEmpty());
+    }
+
+    @Test
+    void paginatedSearch_AppliesToWholeResultSetNotJustCurrentPage() throws Exception {
+        // The only match is the oldest row, which is not on the first unfiltered page.
+        insertFile("needle-file", "needle-report.txt", "storage_user", 1_000L);
+        for (int i = 1; i <= 4; i++) {
+            insertFile("other-file-" + i, "other-" + i + ".txt", "storage_user", 2_000L + i);
+        }
+
+        assertEquals(1L, storageService.getFileCount(testUser, "needle"));
+        assertEquals(List.of("needle-report.txt"),
+                filenames(storageService.listFilesPaginated(testUser, "NEEDLE", 2, 0)),
+                "Search must match case-insensitively across the whole table");
+    }
+
+    @Test
+    void paginatedSearch_TreatsSqlWildcardsLiterally() throws Exception {
+        insertFile("percent-file", "100%_done.txt", "storage_user", 10L);
+        insertFile("plain-file", "100Xdone.txt", "storage_user", 20L);
+        insertFile("other-file", "plain.txt", "storage_user", 30L);
+
+        assertEquals(1L, storageService.getFileCount(testUser, "100%"),
+                "% must be treated as a literal character");
+        assertEquals(List.of("100%_done.txt"),
+                filenames(storageService.listFilesPaginated(testUser, "100%_", 10, 0)),
+                "_ must be treated as a literal character");
+    }
+
+    @Test
+    void listFilesPaginated_RejectsInvalidPageArguments() {
+        assertThrows(IllegalArgumentException.class,
+                () -> storageService.listFilesPaginated(testUser, 0, 0),
+                "A non-positive limit must be rejected");
+        assertThrows(IllegalArgumentException.class,
+                () -> storageService.listFilesPaginated(testUser, 10, -1),
+                "A negative offset must be rejected");
+    }
+
+    @Test
     void testDownload() throws Exception {
         storageService.uploadFile(tempFile, testUser, secretKey);
         FileMetadata meta = storageService.listFiles(testUser).get(0);
@@ -167,6 +240,27 @@ public class StorageServiceTest {
                 return rs.next() ? rs.getInt(1) : 0;
             }
         }
+    }
+
+    private void insertFile(String id, String filename, String owner, long timestamp)
+            throws Exception {
+        String sql = "INSERT INTO FILES (id, filename, owner, original_size, stored_size," +
+                " timestamp, encrypted_fek) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, id);
+            pstmt.setString(2, filename);
+            pstmt.setString(3, owner);
+            pstmt.setLong(4, 100L);
+            pstmt.setLong(5, 100L);
+            pstmt.setLong(6, timestamp);
+            pstmt.setBytes(7, new byte[16]);
+            pstmt.executeUpdate();
+        }
+    }
+
+    private static List<String> filenames(List<FileMetadata> files) {
+        return files.stream().map(FileMetadata::getFilename).toList();
     }
 
     @Test

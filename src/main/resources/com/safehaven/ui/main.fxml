@@ -2,6 +2,7 @@
 
 <?import javafx.geometry.Insets?>
 <?import javafx.scene.control.Button?>
+<?import javafx.scene.control.ComboBox?>
 <?import javafx.scene.control.Label?>
 <?import javafx.scene.control.ProgressBar?>
 <?import javafx.scene.control.Tab?>
@@ -39,6 +40,18 @@
                         <TableColumn fx:id="dateColumn" prefWidth="180.0" text="Date Uploaded" />
                     </columns>
                   </TableView>
+                  <HBox alignment="CENTER" spacing="12.0">
+                     <padding>
+                        <Insets bottom="6.0" top="6.0" />
+                     </padding>
+                     <children>
+                        <Button fx:id="myFilesPrevButton" onAction="#handleMyFilesPreviousPage" text="Previous Page" />
+                        <Label fx:id="myFilesPageLabel" text="Page 1 of 1 (Total: 0 items)" />
+                        <Button fx:id="myFilesNextButton" onAction="#handleMyFilesNextPage" text="Next Page" />
+                        <Label text="Page size:" />
+                        <ComboBox fx:id="myFilesPageSizeBox" prefWidth="80.0" />
+                     </children>
+                  </HBox>
                   <HBox alignment="CENTER" spacing="15.0">
                      <padding>
                         <Insets bottom="10.0" top="10.0" />
@@ -64,6 +77,18 @@
                       <TableColumn fx:id="sharedDateColumn" prefWidth="180.0" text="Date Shared" />
                     </columns>
                   </TableView>
+                  <HBox alignment="CENTER" spacing="12.0">
+                     <padding>
+                        <Insets bottom="6.0" top="6.0" />
+                     </padding>
+                     <children>
+                        <Button fx:id="sharedPrevButton" onAction="#handleSharedPreviousPage" text="Previous Page" />
+                        <Label fx:id="sharedPageLabel" text="Page 1 of 1 (Total: 0 items)" />
+                        <Button fx:id="sharedNextButton" onAction="#handleSharedNextPage" text="Next Page" />
+                        <Label text="Page size:" />
+                        <ComboBox fx:id="sharedPageSizeBox" prefWidth="80.0" />
+                     </children>
+                  </HBox>
                   <HBox alignment="CENTER" spacing="15.0">
                      <padding>
                         <Insets bottom="10.0" top="10.0" />

@@ -26,6 +26,11 @@ public class MainApp extends Application {
         stage.show();
     }
 
+    @Override
+    public void stop() {
+        DatabaseManager.shutdownDatabase();
+    }
+
     public static void setRoot(String fxml) throws IOException {
         scene.setRoot(loadFXML(fxml));
     }

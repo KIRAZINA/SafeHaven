@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.PrivateKey;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.List;
 
@@ -251,5 +252,102 @@ public class ShareServiceTest {
         } finally {
             bobDest.delete();
         }
+    }
+
+    @Test
+    void listSharedWithMePaginated_ReturnsPagesNewestShareFirst() throws Exception {
+        for (int i = 1; i <= 5; i++) {
+            insertFile("shared-file-" + i, "shared-" + i + ".txt", "alice", 1_000L + i);
+            insertShare("share-" + i, "shared-file-" + i, "alice", "bob", 2_000L + i);
+        }
+
+        assertEquals(List.of("shared-5.txt", "shared-4.txt"),
+                sharedFilenames(shareService.listSharedWithMePaginated(bob, 2, 0)),
+                "First page must contain the two most recent shares");
+        assertEquals(List.of("shared-3.txt", "shared-2.txt"),
+                sharedFilenames(shareService.listSharedWithMePaginated(bob, 2, 2)),
+                "Offset must skip the first page");
+        assertEquals(List.of("shared-1.txt"),
+                sharedFilenames(shareService.listSharedWithMePaginated(bob, 2, 4)),
+                "Last page may contain fewer than limit rows");
+        assertTrue(shareService.listSharedWithMePaginated(bob, 2, 6).isEmpty(),
+                "An offset past the end must return an empty page");
+    }
+
+    @Test
+    void getSharedFileCount_CountsOnlySharesToTheUser() throws Exception {
+        insertFile("count-file-1", "one.txt", "alice", 1L);
+        insertFile("count-file-2", "two.txt", "alice", 2L);
+        insertShare("count-share-1", "count-file-1", "alice", "bob", 10L);
+        insertShare("count-share-2", "count-file-2", "alice", "bob", 20L);
+        // A share addressed to Alice must not count toward Bob's inbox.
+        insertShare("count-share-3", "count-file-1", "bob", "alice", 30L);
+
+        assertEquals(2L, shareService.getSharedFileCount(bob));
+        assertEquals(1L, shareService.getSharedFileCount(alice));
+        assertEquals(0L, shareService.getSharedFileCount(
+                new User("charlie", new byte[0], new byte[16])));
+    }
+
+    @Test
+    void paginatedSharedSearch_FiltersByFilenameAndSenderAcrossAllPages() throws Exception {
+        insertFile("search-file-1", "needle-report.txt", "alice", 1L);
+        insertFile("search-file-2", "other.txt", "alice", 2L);
+        insertShare("search-share-1", "search-file-1", "alice", "bob", 10L);
+        insertShare("search-share-2", "search-file-2", "alice", "bob", 20L);
+
+        assertEquals(1L, shareService.getSharedFileCount(bob, "needle"));
+        assertEquals(List.of("needle-report.txt"),
+                sharedFilenames(shareService.listSharedWithMePaginated(bob, "NEEDLE", 10, 0)),
+                "Filename search must be case-insensitive");
+        assertEquals(2L, shareService.getSharedFileCount(bob, "alice"),
+                "Search must also match the sender's username");
+    }
+
+    @Test
+    void listSharedWithMePaginated_RejectsInvalidPageArguments() {
+        assertThrows(IllegalArgumentException.class,
+                () -> shareService.listSharedWithMePaginated(bob, 0, 0),
+                "A non-positive limit must be rejected");
+        assertThrows(IllegalArgumentException.class,
+                () -> shareService.listSharedWithMePaginated(bob, 10, -1),
+                "A negative offset must be rejected");
+    }
+
+    private void insertFile(String id, String filename, String owner, long timestamp)
+            throws Exception {
+        String sql = "INSERT INTO FILES (id, filename, owner, original_size, stored_size," +
+                " timestamp, encrypted_fek) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, id);
+            pstmt.setString(2, filename);
+            pstmt.setString(3, owner);
+            pstmt.setLong(4, 100L);
+            pstmt.setLong(5, 100L);
+            pstmt.setLong(6, timestamp);
+            pstmt.setBytes(7, new byte[16]);
+            pstmt.executeUpdate();
+        }
+    }
+
+    private void insertShare(String id, String fileId, String fromUser, String toUser,
+                             long timestamp) throws Exception {
+        String sql = "INSERT INTO SHARES (id, file_id, from_user, to_user, wrapped_fek," +
+                " timestamp) VALUES (?, ?, ?, ?, ?, ?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, id);
+            pstmt.setString(2, fileId);
+            pstmt.setString(3, fromUser);
+            pstmt.setString(4, toUser);
+            pstmt.setBytes(5, new byte[16]);
+            pstmt.setLong(6, timestamp);
+            pstmt.executeUpdate();
+        }
+    }
+
+    private static List<String> sharedFilenames(List<SharedFileEntry> entries) {
+        return entries.stream().map(SharedFileEntry::getFilename).toList();
     }
 }

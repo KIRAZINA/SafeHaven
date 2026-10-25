@@ -23,6 +23,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 public class ShareService implements IShareService {
@@ -114,6 +115,117 @@ public class ShareService implements IShareService {
             logger.error("Failed to list shared files for user: {}", user.getUsername(), e);
         }
         return shares;
+    }
+
+    @Override
+    public List<SharedFileEntry> listSharedWithMePaginated(User user, int limit, int offset)
+            throws SQLException {
+        return listSharedWithMePaginated(user, null, limit, offset);
+    }
+
+    @Override
+    public List<SharedFileEntry> listSharedWithMePaginated(User user, String search,
+                                                           int limit, int offset)
+            throws SQLException {
+        validatePageArguments(limit, offset);
+
+        boolean filtered = search != null && !search.isBlank();
+        StringBuilder sql = new StringBuilder(
+                "SELECT S.id as shareId, S.file_id, F.filename, S.from_user, F.original_size," +
+                " S.timestamp, S.wrapped_fek " +
+                "FROM SHARES S " +
+                "JOIN FILES F ON S.file_id = F.id " +
+                "WHERE S.to_user = ?");
+        if (filtered) {
+            sql.append(" AND (LOWER(F.filename) LIKE ? ESCAPE '\\'")
+               .append(" OR LOWER(S.from_user) LIKE ? ESCAPE '\\')");
+        }
+        sql.append(" ORDER BY S.timestamp DESC, S.id DESC LIMIT ? OFFSET ?");
+
+        List<SharedFileEntry> shares = new ArrayList<>();
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+            int index = 1;
+            pstmt.setString(index++, user.getUsername());
+            if (filtered) {
+                String pattern = likePattern(search);
+                pstmt.setString(index++, pattern);
+                pstmt.setString(index++, pattern);
+            }
+            pstmt.setInt(index++, limit);
+            pstmt.setInt(index, offset);
+
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    shares.add(mapShare(rs));
+                }
+            }
+        }
+        return shares;
+    }
+
+    @Override
+    public long getSharedFileCount(User user) throws SQLException {
+        return getSharedFileCount(user, null);
+    }
+
+    @Override
+    public long getSharedFileCount(User user, String search) throws SQLException {
+        boolean filtered = search != null && !search.isBlank();
+        String sql = "SELECT COUNT(*) FROM SHARES S"
+                + (filtered ? " JOIN FILES F ON S.file_id = F.id" : "")
+                + " WHERE S.to_user = ?"
+                + (filtered ? " AND (LOWER(F.filename) LIKE ? ESCAPE '\\'"
+                        + " OR LOWER(S.from_user) LIKE ? ESCAPE '\\')" : "");
+
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            int index = 1;
+            pstmt.setString(index++, user.getUsername());
+            if (filtered) {
+                String pattern = likePattern(search);
+                pstmt.setString(index++, pattern);
+                pstmt.setString(index++, pattern);
+            }
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        }
+    }
+
+    private static SharedFileEntry mapShare(ResultSet rs) throws SQLException {
+        return new SharedFileEntry(
+                rs.getString("shareId"),
+                rs.getString("file_id"),
+                rs.getString("filename"),
+                rs.getString("from_user"),
+                rs.getLong("original_size"),
+                rs.getLong("timestamp"),
+                rs.getBytes("wrapped_fek")
+        );
+    }
+
+    private static void validatePageArguments(int limit, int offset) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("limit must be greater than zero");
+        }
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must not be negative");
+        }
+    }
+
+    /** Case-insensitive LIKE pattern with SQL wildcards escaped. */
+    private static String likePattern(String search) {
+        String term = search.trim().toLowerCase(Locale.ROOT);
+        StringBuilder pattern = new StringBuilder(term.length() + 2).append('%');
+        for (int i = 0; i < term.length(); i++) {
+            char c = term.charAt(i);
+            if (c == '%' || c == '_' || c == '\\') {
+                pattern.append('\\');
+            }
+            pattern.append(c);
+        }
+        return pattern.append('%').toString();
     }
 
     /**

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.HashMap;
@@ -23,7 +24,9 @@ class MigrationTest {
 
         DatabaseManager.setDbUrl(url);
 
-        try (Connection conn = DatabaseManager.getConnection();
+        // Simulate a database created by an older release: it is populated
+        // before any pool/Flyway initialization happens.
+        try (Connection conn = DriverManager.getConnection(url, "sa", "");
              Statement stmt = conn.createStatement()) {
 
             stmt.execute("CREATE TABLE USERS (" +

@@ -29,6 +29,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 import java.util.UUID;
 
@@ -195,6 +196,107 @@ public class StorageService implements IStorageService {
             logger.error("Failed to list files for user: {}", user.getUsername(), e);
         }
         return files;
+    }
+
+    @Override
+    public List<FileMetadata> listFilesPaginated(User user, int limit, int offset)
+            throws SQLException {
+        return listFilesPaginated(user, null, limit, offset);
+    }
+
+    @Override
+    public List<FileMetadata> listFilesPaginated(User user, String search, int limit, int offset)
+            throws SQLException {
+        validatePageArguments(limit, offset);
+
+        boolean filtered = search != null && !search.isBlank();
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, filename, owner, original_size, stored_size, timestamp, encrypted_fek" +
+                " FROM FILES WHERE owner = ?");
+        if (filtered) {
+            sql.append(" AND LOWER(filename) LIKE ? ESCAPE '\\'");
+        }
+        sql.append(" ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?");
+
+        List<FileMetadata> files = new ArrayList<>();
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+            int index = 1;
+            pstmt.setString(index++, user.getUsername());
+            if (filtered) {
+                pstmt.setString(index++, likePattern(search));
+            }
+            pstmt.setInt(index++, limit);
+            pstmt.setInt(index, offset);
+
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    files.add(mapFile(rs));
+                }
+            }
+        }
+        return files;
+    }
+
+    @Override
+    public long getFileCount(User user) throws SQLException {
+        return getFileCount(user, null);
+    }
+
+    @Override
+    public long getFileCount(User user, String search) throws SQLException {
+        boolean filtered = search != null && !search.isBlank();
+        String sql = "SELECT COUNT(*) FROM FILES WHERE owner = ?"
+                + (filtered ? " AND LOWER(filename) LIKE ? ESCAPE '\\'" : "");
+
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, user.getUsername());
+            if (filtered) {
+                pstmt.setString(2, likePattern(search));
+            }
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        }
+    }
+
+    private static FileMetadata mapFile(ResultSet rs) throws SQLException {
+        return new FileMetadata(
+                rs.getString("id"),
+                rs.getString("filename"),
+                rs.getString("owner"),
+                rs.getLong("original_size"),
+                rs.getLong("stored_size"),
+                rs.getLong("timestamp"),
+                rs.getBytes("encrypted_fek")
+        );
+    }
+
+    private static void validatePageArguments(int limit, int offset) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("limit must be greater than zero");
+        }
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must not be negative");
+        }
+    }
+
+    /**
+     * Builds a case-insensitive LIKE pattern, escaping the SQL wildcards so a
+     * filename search for {@code 100%} does not match everything.
+     */
+    private static String likePattern(String search) {
+        String term = search.trim().toLowerCase(Locale.ROOT);
+        StringBuilder pattern = new StringBuilder(term.length() + 2).append('%');
+        for (int i = 0; i < term.length(); i++) {
+            char c = term.charAt(i);
+            if (c == '%' || c == '_' || c == '\\') {
+                pattern.append('\\');
+            }
+            pattern.append(c);
+        }
+        return pattern.append('%').toString();
     }
 
     public void deleteFile(FileMetadata meta, User user) {

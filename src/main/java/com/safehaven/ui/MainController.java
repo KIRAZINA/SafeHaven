@@ -16,7 +16,6 @@ import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
-import javafx.collections.transformation.FilteredList;
 import javafx.concurrent.Task;
 import javafx.event.EventHandler;
 import javafx.fxml.FXML;
@@ -42,10 +41,15 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.function.IntConsumer;
 
 public class MainController {
 
     private static final Logger logger = LoggerFactory.getLogger(MainController.class);
+
+    static final int DEFAULT_PAGE_SIZE = 25;
+    static final List<Integer> PAGE_SIZE_OPTIONS = List.of(10, 25, 50, 100);
 
     // General UI
     @FXML private Label welcomeLabel;
@@ -58,6 +62,10 @@ public class MainController {
     @FXML private TableColumn<FileMetadata, String> filenameColumn;
     @FXML private TableColumn<FileMetadata, Number> sizeColumn;
     @FXML private TableColumn<FileMetadata, String> dateColumn;
+    @FXML private Button myFilesPrevButton;
+    @FXML private Button myFilesNextButton;
+    @FXML private Label myFilesPageLabel;
+    @FXML private ComboBox<Integer> myFilesPageSizeBox;
 
     // Shared With Me Tab
     @FXML private TableView<SharedFileEntry> sharedTable;
@@ -65,6 +73,10 @@ public class MainController {
     @FXML private TableColumn<SharedFileEntry, String> sharedFromColumn;
     @FXML private TableColumn<SharedFileEntry, Number> sharedSizeColumn;
     @FXML private TableColumn<SharedFileEntry, String> sharedDateColumn;
+    @FXML private Button sharedPrevButton;
+    @FXML private Button sharedNextButton;
+    @FXML private Label sharedPageLabel;
+    @FXML private ComboBox<Integer> sharedPageSizeBox;
 
     private User currentUser;
     private SecretKey secretKey;
@@ -97,10 +109,22 @@ public class MainController {
     }
 
     private final ObservableList<FileMetadata> myFilesData = FXCollections.observableArrayList();
-    private FilteredList<FileMetadata> filteredMyFilesData;
-
     private final ObservableList<SharedFileEntry> sharedFilesData = FXCollections.observableArrayList();
-    private FilteredList<SharedFileEntry> filteredSharedFilesData;
+
+    // Pagination state (pages are zero-based internally).
+    private int myFilesPage = 0;
+    private int myFilesPageSize = DEFAULT_PAGE_SIZE;
+    private long myFilesTotalItems = 0;
+    private int myFilesTotalPages = 0;
+
+    private int sharedFilesPage = 0;
+    private int sharedFilesPageSize = DEFAULT_PAGE_SIZE;
+    private long sharedFilesTotalItems = 0;
+    private int sharedFilesTotalPages = 0;
+
+    // Guards against slow, out-of-order results overwriting a newer query.
+    private long myFilesLoadGeneration = 0;
+    private long sharedFilesLoadGeneration = 0;
 
     private final ExecutorService executor = Executors.newFixedThreadPool(4, r -> {
         Thread t = new Thread(r, "safehaven-io");
@@ -124,6 +148,7 @@ public class MainController {
             welcomeLabel.setText("Welcome, " + user.getUsername());
 
             setupTables();
+            setupPagination();
             setupSearch();
             refreshFileList();
             refreshSharedFileList();
@@ -145,8 +170,7 @@ public class MainController {
         sizeColumn.setCellValueFactory(cd -> new SimpleLongProperty(cd.getValue().getOriginalSize()));
         dateColumn.setCellValueFactory(cd -> new SimpleStringProperty(sdf.format(new Date(cd.getValue().getTimestamp()))));
 
-        filteredMyFilesData = new FilteredList<>(myFilesData, p -> true);
-        fileTable.setItems(filteredMyFilesData);
+        fileTable.setItems(myFilesData);
 
         // Shared Table
         sharedFilenameColumn.setCellValueFactory(cd -> new SimpleStringProperty(cd.getValue().getFilename()));
@@ -154,23 +178,45 @@ public class MainController {
         sharedSizeColumn.setCellValueFactory(cd -> new SimpleLongProperty(cd.getValue().getOriginalSize()));
         sharedDateColumn.setCellValueFactory(cd -> new SimpleStringProperty(sdf.format(new Date(cd.getValue().getTimestamp()))));
 
-        filteredSharedFilesData = new FilteredList<>(sharedFilesData, p -> true);
-        sharedTable.setItems(filteredSharedFilesData);
+        sharedTable.setItems(sharedFilesData);
+    }
+
+    private void setupPagination() {
+        configurePageSizeBox(myFilesPageSizeBox, myFilesPageSize, size -> {
+            myFilesPageSize = size;
+            myFilesPage = 0;
+            refreshFileList();
+        });
+        configurePageSizeBox(sharedPageSizeBox, sharedFilesPageSize, size -> {
+            sharedFilesPageSize = size;
+            sharedFilesPage = 0;
+            refreshSharedFileList();
+        });
+
+        updateMyFilesPaginationControls();
+        updateSharedFilesPaginationControls();
+    }
+
+    private static void configurePageSizeBox(ComboBox<Integer> box, int initialSize,
+                                             IntConsumer onSizeChanged) {
+        box.setItems(FXCollections.observableArrayList(PAGE_SIZE_OPTIONS));
+        box.setValue(initialSize);
+        box.valueProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue == null || newValue <= 0 || newValue.equals(oldValue)) {
+                return;
+            }
+            onSizeChanged.accept(newValue);
+        });
     }
 
     private void setupSearch() {
+        // Search is executed by SQL, so it spans every row rather than only
+        // filtering the rows already loaded for the current page.
         searchField.textProperty().addListener((obs, oldVal, newVal) -> {
-            String lowerCaseFilter = (newVal == null) ? "" : newVal.toLowerCase();
-            
-            filteredMyFilesData.setPredicate(file -> 
-                lowerCaseFilter.isEmpty() || file.getFilename().toLowerCase().contains(lowerCaseFilter)
-            );
-            
-            filteredSharedFilesData.setPredicate(entry -> 
-                lowerCaseFilter.isEmpty() || 
-                entry.getFilename().toLowerCase().contains(lowerCaseFilter) ||
-                entry.getFromUser().toLowerCase().contains(lowerCaseFilter)
-            );
+            myFilesPage = 0;
+            sharedFilesPage = 0;
+            refreshFileList();
+            refreshSharedFileList();
         });
     }
 
@@ -197,14 +243,218 @@ public class MainController {
     }
 
     private void refreshFileList() {
-        List<FileMetadata> files = storageService.listFiles(currentUser);
-        Platform.runLater(() -> myFilesData.setAll(files));
+        final User user = currentUser;
+        if (user == null) {
+            return;
+        }
+
+        final long generation = ++myFilesLoadGeneration;
+        final int requestedPage = myFilesPage;
+        final int requestedSize = myFilesPageSize;
+        final String search = currentSearch();
+
+        setPaginationBusy(myFilesPrevButton, myFilesNextButton);
+
+        Task<PageResult<FileMetadata>> task = new Task<>() {
+            @Override
+            protected PageResult<FileMetadata> call() throws Exception {
+                long totalItems = storageService.getFileCount(user, search);
+                int page = clampPage(requestedPage, totalItems, requestedSize);
+                int offset = pageOffset(page, requestedSize);
+                List<FileMetadata> items = totalItems == 0
+                        ? List.of()
+                        : storageService.listFilesPaginated(user, search, requestedSize, offset);
+                return new PageResult<>(items, totalItems, page);
+            }
+        };
+
+        task.setOnSucceeded(e -> {
+            if (generation != myFilesLoadGeneration) {
+                return; // A newer refresh superseded this result.
+            }
+            PageResult<FileMetadata> result = task.getValue();
+            myFilesPage = result.page();
+            myFilesTotalItems = result.totalItems();
+            myFilesTotalPages = totalPages(myFilesTotalItems, myFilesPageSize);
+            myFilesData.setAll(result.items());
+            updateMyFilesPaginationControls();
+        });
+
+        task.setOnFailed(e -> {
+            if (generation != myFilesLoadGeneration) {
+                return;
+            }
+            logger.error("Failed to load page {} of files for {}",
+                    requestedPage, user.getUsername(), task.getException());
+            updateMyFilesPaginationControls();
+            showAlert(Alert.AlertType.ERROR, "Load Error",
+                    "Failed to load files: " + messageOf(task.getException()));
+        });
+
+        submit(task);
     }
 
     private void refreshSharedFileList() {
-        List<SharedFileEntry> shares = shareService.listSharedWithMe(currentUser);
-        Platform.runLater(() -> sharedFilesData.setAll(shares));
+        final User user = currentUser;
+        if (user == null) {
+            return;
+        }
+
+        final long generation = ++sharedFilesLoadGeneration;
+        final int requestedPage = sharedFilesPage;
+        final int requestedSize = sharedFilesPageSize;
+        final String search = currentSearch();
+
+        setPaginationBusy(sharedPrevButton, sharedNextButton);
+
+        Task<PageResult<SharedFileEntry>> task = new Task<>() {
+            @Override
+            protected PageResult<SharedFileEntry> call() throws Exception {
+                long totalItems = shareService.getSharedFileCount(user, search);
+                int page = clampPage(requestedPage, totalItems, requestedSize);
+                int offset = pageOffset(page, requestedSize);
+                List<SharedFileEntry> items = totalItems == 0
+                        ? List.of()
+                        : shareService.listSharedWithMePaginated(user, search, requestedSize, offset);
+                return new PageResult<>(items, totalItems, page);
+            }
+        };
+
+        task.setOnSucceeded(e -> {
+            if (generation != sharedFilesLoadGeneration) {
+                return;
+            }
+            PageResult<SharedFileEntry> result = task.getValue();
+            sharedFilesPage = result.page();
+            sharedFilesTotalItems = result.totalItems();
+            sharedFilesTotalPages = totalPages(sharedFilesTotalItems, sharedFilesPageSize);
+            sharedFilesData.setAll(result.items());
+            updateSharedFilesPaginationControls();
+        });
+
+        task.setOnFailed(e -> {
+            if (generation != sharedFilesLoadGeneration) {
+                return;
+            }
+            logger.error("Failed to load page {} of shared files for {}",
+                    requestedPage, user.getUsername(), task.getException());
+            updateSharedFilesPaginationControls();
+            showAlert(Alert.AlertType.ERROR, "Load Error",
+                    "Failed to load shared files: " + messageOf(task.getException()));
+        });
+
+        submit(task);
     }
+
+    // ─── Pagination ─────────────────────────────────────────────────────────
+
+    @FXML
+    private void handleMyFilesPreviousPage() {
+        if (myFilesPage > 0) {
+            myFilesPage--;
+            refreshFileList();
+        }
+    }
+
+    @FXML
+    private void handleMyFilesNextPage() {
+        if (myFilesPage + 1 < myFilesTotalPages) {
+            myFilesPage++;
+            refreshFileList();
+        }
+    }
+
+    @FXML
+    private void handleSharedPreviousPage() {
+        if (sharedFilesPage > 0) {
+            sharedFilesPage--;
+            refreshSharedFileList();
+        }
+    }
+
+    @FXML
+    private void handleSharedNextPage() {
+        if (sharedFilesPage + 1 < sharedFilesTotalPages) {
+            sharedFilesPage++;
+            refreshSharedFileList();
+        }
+    }
+
+    private void updateMyFilesPaginationControls() {
+        updatePaginationControls(myFilesPageLabel, myFilesPrevButton, myFilesNextButton,
+                myFilesPage, myFilesTotalPages, myFilesTotalItems);
+    }
+
+    private void updateSharedFilesPaginationControls() {
+        updatePaginationControls(sharedPageLabel, sharedPrevButton, sharedNextButton,
+                sharedFilesPage, sharedFilesTotalPages, sharedFilesTotalItems);
+    }
+
+    private static void updatePaginationControls(Label pageLabel, Button previous, Button next,
+                                                 int page, int totalPages, long totalItems) {
+        pageLabel.setText(pageInfoText(page, totalPages, totalItems));
+        previous.setDisable(page <= 0);
+        next.setDisable(totalPages == 0 || page + 1 >= totalPages);
+    }
+
+    private static void setPaginationBusy(Button previous, Button next) {
+        previous.setDisable(true);
+        next.setDisable(true);
+    }
+
+    /** Number of pages, or {@code 0} when there are no rows. */
+    static int totalPages(long totalItems, int pageSize) {
+        if (totalItems <= 0 || pageSize <= 0) {
+            return 0;
+        }
+        return (int) ((totalItems - 1) / pageSize + 1);
+    }
+
+    /** Clamps a requested zero-based page into the valid range for the result set. */
+    static int clampPage(int page, long totalItems, int pageSize) {
+        int pages = totalPages(totalItems, pageSize);
+        if (pages == 0) {
+            return 0;
+        }
+        return Math.max(0, Math.min(page, pages - 1));
+    }
+
+    static int pageOffset(int page, int pageSize) {
+        long offset = (long) page * pageSize;
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, offset));
+    }
+
+    static String pageInfoText(int page, int totalPages, long totalItems) {
+        int shownTotalPages = Math.max(totalPages, 1);
+        int shownPage = totalPages == 0 ? 1 : Math.min(page + 1, totalPages);
+        return "Page " + shownPage + " of " + shownTotalPages
+                + " (Total: " + totalItems + " items)";
+    }
+
+    private String currentSearch() {
+        if (searchField == null || searchField.getText() == null) {
+            return null;
+        }
+        String trimmed = searchField.getText().trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private void submit(Task<?> task) {
+        try {
+            executor.submit(task);
+        } catch (RejectedExecutionException e) {
+            logger.debug("Ignoring refresh request after executor shutdown");
+        }
+    }
+
+    private static String messageOf(Throwable throwable) {
+        if (throwable == null) {
+            return "Unknown error";
+        }
+        return throwable.getMessage() != null ? throwable.getMessage() : throwable.toString();
+    }
+
+    private record PageResult<T>(List<T> items, long totalItems, int page) { }
 
     // ─── My Files Actions ───────────────────────────────────────────────────
 
@@ -230,6 +480,7 @@ public class MainController {
         bindProgress(task);
         task.setOnSucceeded(e -> {
             unbindProgress();
+            myFilesPage = 0; // Newest files sort first.
             refreshFileList();
             showAlert(Alert.AlertType.INFORMATION, "Done", "File uploaded successfully.");
         });
@@ -503,6 +754,9 @@ public class MainController {
     private void performLogout(boolean sessionExpired) throws Exception {
         stopInactivityMonitoring();
         clearSessionSecrets();
+        // Discard results from page loads still in flight for this session.
+        myFilesLoadGeneration++;
+        sharedFilesLoadGeneration++;
         executor.shutdown();
         MainApp.setRoot("ui/login");
         if (sessionExpired) {

@@ -1,5 +1,7 @@
 package com.safehaven.db;
 
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
 import org.flywaydb.core.api.output.MigrateResult;
@@ -9,19 +11,30 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.Properties;
 
 public class DatabaseManager {
     private static final Logger logger = LoggerFactory.getLogger(DatabaseManager.class);
 
+    static final String POOL_NAME = "SafeHaven-HikariPool";
+    static final int DEFAULT_MAX_POOL_SIZE = 10;
+    static final int DEFAULT_MIN_IDLE = 2;
+    private static final long IDLE_TIMEOUT_MILLIS = 30_000L;
+    private static final long CONNECTION_TIMEOUT_MILLIS = 10_000L;
+
     private static String dbUrl;
     private static String dbUser;
     private static String dbPassword;
+    private static int maxPoolSize;
+    private static int minIdle;
+
+    private static volatile HikariDataSource dataSource;
 
     static {
         loadConfig();
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(DatabaseManager::shutdownDatabase, "safehaven-db-shutdown"));
     }
 
     private static void loadConfig() {
@@ -38,22 +51,60 @@ public class DatabaseManager {
                 "jdbc:h2:./safehaven;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE");
         dbUser     = props.getProperty("jdbc.user",     "sa");
         dbPassword = props.getProperty("jdbc.password", "");
+
+        maxPoolSize = positiveInt(props.getProperty("db.pool.max.size"), DEFAULT_MAX_POOL_SIZE);
+        minIdle     = positiveInt(props.getProperty("db.pool.min.idle"), DEFAULT_MIN_IDLE);
+        if (minIdle > maxPoolSize) {
+            logger.warn("db.pool.min.idle ({}) exceeds db.pool.max.size ({}); using {}",
+                    minIdle, maxPoolSize, maxPoolSize);
+            minIdle = maxPoolSize;
+        }
     }
 
-    /** Overrides the DB URL (used by tests). */
-    public static void setDbUrl(String url) {
+    private static int positiveInt(String raw, int fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value > 0 ? value : fallback;
+        } catch (NumberFormatException e) {
+            logger.warn("Ignoring invalid pool size '{}'; using {}", raw, fallback);
+            return fallback;
+        }
+    }
+
+    /**
+     * Overrides the DB URL (used by tests). Any pool bound to the previous URL
+     * is closed first, so callers must invoke {@link #initializeDatabase()}
+     * before requesting connections again.
+     */
+    public static synchronized void setDbUrl(String url) {
+        closePool();
         dbUrl      = url;
         dbUser     = "sa";
         dbPassword = "";
     }
 
+    /**
+     * Borrows a connection from the pool. Closing it returns it to the pool
+     * instead of closing the underlying physical connection.
+     */
     public static Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(dbUrl, dbUser, dbPassword);
+        HikariDataSource ds = dataSource;
+        if (ds == null || ds.isClosed()) {
+            throw new SQLException("DatabasePool is not initialized");
+        }
+        return ds.getConnection();
+    }
+
+    /** Visible for tests: the underlying pool, or {@code null} when not initialized. */
+    static HikariDataSource getDataSource() {
+        return dataSource;
     }
 
     /**
-     * Applies pending schema migrations. Flyway is the single source of truth
-     * for DDL.
+     * Creates the pool (if needed) and applies pending Flyway migrations.
      *
      * <p>Existing non-empty databases are baselined at version {@code 0} so
      * that the idempotent {@code V1__Initial_schema.sql} still runs and can add
@@ -61,9 +112,21 @@ public class DatabaseManager {
      * indexes) without touching existing rows. Fresh databases simply run
      * V1 from scratch.</p>
      */
-    public static void initializeDatabase() {
+    public static synchronized void initializeDatabase() {
+        HikariDataSource ds = dataSource;
+        if (ds == null || ds.isClosed()) {
+            try {
+                ds = new HikariDataSource(buildConfig());
+                dataSource = ds;
+            } catch (RuntimeException e) {
+                dataSource = null;
+                logger.error("Failed to initialize database pool", e);
+                throw new RuntimeException("Failed to initialize database", e);
+            }
+        }
+
         Flyway flyway = Flyway.configure()
-                .dataSource(dbUrl, dbUser, dbPassword)
+                .dataSource(ds)
                 .baselineOnMigrate(true)
                 .baselineVersion("0")
                 .locations("classpath:db/migration")
@@ -76,6 +139,36 @@ public class DatabaseManager {
         } catch (FlywayException e) {
             logger.error("Failed to initialize database", e);
             throw new RuntimeException("Failed to initialize database", e);
+        }
+    }
+
+    /** Closes the connection pool. Safe to call multiple times. */
+    public static synchronized void shutdownDatabase() {
+        closePool();
+    }
+
+    private static HikariConfig buildConfig() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(dbUrl);
+        config.setUsername(dbUser);
+        config.setPassword(dbPassword);
+        config.setMaximumPoolSize(maxPoolSize);
+        config.setMinimumIdle(minIdle);
+        config.setPoolName(POOL_NAME);
+        config.setIdleTimeout(IDLE_TIMEOUT_MILLIS);
+        config.setConnectionTimeout(CONNECTION_TIMEOUT_MILLIS);
+        return config;
+    }
+
+    private static void closePool() {
+        HikariDataSource ds = dataSource;
+        dataSource = null;
+        if (ds != null && !ds.isClosed()) {
+            try {
+                ds.close();
+            } catch (RuntimeException e) {
+                logger.warn("Failed to close database pool cleanly", e);
+            }
         }
     }
 }
