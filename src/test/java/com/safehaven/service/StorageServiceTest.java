@@ -265,6 +265,54 @@ public class StorageServiceTest {
     }
 
     @Test
+    void testUploadFile_PopulatesStreamedSizes() throws Exception {
+        byte[] content = new byte[64 * 1024];
+        new java.security.SecureRandom().nextBytes(content);
+        File source = File.createTempFile("sized", ".dat");
+        try {
+            Files.write(source.toPath(), content);
+            storageService.uploadFile(source, testUser, secretKey);
+
+            FileMetadata meta = storageService.listFiles(testUser).get(0);
+            Path storedFile = Paths.get(System.getProperty("user.home"),
+                    ".securestorage", testUser.getUsername(), meta.getId() + ".enc");
+
+            assertEquals(content.length, meta.getOriginalSize(),
+                    "original_size must reflect the streamed source length");
+            assertEquals(Files.size(storedFile), meta.getStoredSize(),
+                    "stored_size must reflect the actual encrypted file on disk");
+        } finally {
+            source.delete();
+        }
+    }
+
+    @Test
+    void testDownloadFile_CorruptedGcmTag_DeletesPartialOutput() throws Exception {
+        storageService.uploadFile(tempFile, testUser, secretKey);
+        FileMetadata meta = storageService.listFiles(testUser).get(0);
+
+        Path storedFile = Paths.get(System.getProperty("user.home"),
+                ".securestorage", testUser.getUsername(), meta.getId() + ".enc");
+
+        // Corrupt the trailing GCM authentication tag.
+        byte[] cipherBytes = Files.readAllBytes(storedFile);
+        cipherBytes[cipherBytes.length - 1] ^= 0x01;
+        Files.write(storedFile, cipherBytes);
+
+        File dest = File.createTempFile("corrupt_dl", ".txt");
+        Files.writeString(dest.toPath(), "pre-existing partial content");
+        try {
+            assertThrows(Exception.class, () ->
+                    storageService.downloadFile(meta, testUser, secretKey, dest),
+                    "A corrupted GCM tag must fail the download");
+            assertFalse(Files.exists(dest.toPath()),
+                    "Partially written destination must be deleted after GCM failure");
+        } finally {
+            Files.deleteIfExists(dest.toPath());
+        }
+    }
+
+    @Test
     void testDeleteFile_DeletesFromDiskAndDb() throws Exception {
         storageService.uploadFile(tempFile, testUser, secretKey);
         FileMetadata meta = storageService.listFiles(testUser).get(0);

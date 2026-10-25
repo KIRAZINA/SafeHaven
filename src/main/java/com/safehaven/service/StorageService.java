@@ -8,11 +8,18 @@ import com.safehaven.utils.CompressionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -27,6 +34,7 @@ import java.util.UUID;
 
 public class StorageService implements IStorageService {
     private static final Logger logger = LoggerFactory.getLogger(StorageService.class);
+    private static final int BUFFER_SIZE = 8192;
     static final String STORAGE_DIR;
 
     static {
@@ -62,29 +70,38 @@ public class StorageService implements IStorageService {
     }
 
     public void uploadFile(File source, User user, SecretKey masterKey) throws Exception {
-        byte[] fileData = Files.readAllBytes(source.toPath());
-        long originalSize = fileData.length;
-
         // Generate per-file logic (FEK)
         SecretKey fek = CryptoUtils.generateFileKey();
-        
-        // Compress then encrypt with FEK (not master key)
-        byte[] compressedData = CompressionUtils.compress(fileData);
-        byte[] encryptedData  = CryptoUtils.encrypt(compressedData, fek);
-        long storedSize = encryptedData.length;
 
         // Encrypt the FEK with the user's master key for storage
         byte[] encryptedFek = CryptoUtils.encrypt(fek.getEncoded(), masterKey);
 
         String fileId = UUID.randomUUID().toString();
 
-        // Save to disk FIRST
         Path userDir = Paths.get(STORAGE_DIR, user.getUsername());
-        if (!Files.exists(userDir)) {
-            Files.createDirectories(userDir);
-        }
+        Files.createDirectories(userDir);
         Path destPath = userDir.resolve(fileId + ".enc");
-        Files.write(destPath, encryptedData);
+
+        long originalSize;
+        long storedSize;
+
+        // Upload pipeline:
+        // FileInputStream -> GZIPOutputStream -> CipherOutputStream -> BufferedOutputStream -> File
+        try {
+            try (InputStream fileIn = new BufferedInputStream(
+                         new FileInputStream(source), BUFFER_SIZE);
+                 OutputStream fileOut = new BufferedOutputStream(
+                         new FileOutputStream(destPath.toFile()), BUFFER_SIZE);
+                 CipherOutputStream cipherOut =
+                         CryptoUtils.createEncryptingOutputStream(fileOut, fek)) {
+
+                originalSize = CompressionUtils.compressStream(fileIn, cipherOut);
+            }
+            storedSize = Files.size(destPath);
+        } catch (Exception e) {
+            deletePartialFile(destPath, e);
+            throw e;
+        }
 
         // Save metadata to DB
         String sql = "INSERT INTO FILES (id, filename, owner, original_size, stored_size, timestamp, encrypted_fek)" +
@@ -100,7 +117,7 @@ public class StorageService implements IStorageService {
             pstmt.setBytes(7, encryptedFek);
             pstmt.executeUpdate();
         } catch (SQLException e) {
-            Files.deleteIfExists(destPath);
+            deletePartialFile(destPath, e);
             throw e;
         }
     }
@@ -116,12 +133,41 @@ public class StorageService implements IStorageService {
         byte[] rawFek = CryptoUtils.decrypt(meta.getEncryptedFek(), masterKey);
         SecretKey fek = new SecretKeySpec(rawFek, "AES");
 
-        // 2. Decrypt & Decompress
-        byte[] encryptedData  = Files.readAllBytes(sourcePath);
-        byte[] compressedData = CryptoUtils.decrypt(encryptedData, fek);
-        byte[] originalData   = CompressionUtils.decompress(compressedData);
+        // 2. Stream decrypt & decompress directly to the destination
+        decryptToFile(sourcePath, fek, dest);
+    }
 
-        Files.write(dest.toPath(), originalData);
+    /**
+     * Download pipeline:
+     * BufferedInputStream(FileInputStream) -> CipherInputStream -> GZIPInputStream -> FileOutputStream.
+     * If any stage fails (including GCM tag verification), the partially
+     * written destination file is deleted before the exception propagates.
+     */
+    static void decryptToFile(Path sourcePath, SecretKey fek, File dest) throws Exception {
+        Path destPath = dest.toPath();
+        try {
+            try (InputStream fileIn = new BufferedInputStream(
+                         new FileInputStream(sourcePath.toFile()), BUFFER_SIZE);
+                 CipherInputStream cipherIn =
+                         CryptoUtils.createDecryptingInputStream(fileIn, fek);
+                 OutputStream destOut = new BufferedOutputStream(
+                         new FileOutputStream(dest), BUFFER_SIZE)) {
+
+                CompressionUtils.decompressStream(cipherIn, destOut);
+            }
+        } catch (Exception e) {
+            deletePartialFile(destPath, e);
+            throw e;
+        }
+    }
+
+    private static void deletePartialFile(Path path, Exception cause) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+            logger.warn("Could not delete partially written file: {}", path, cleanupFailure);
+        }
     }
 
     public List<FileMetadata> listFiles(User user) {

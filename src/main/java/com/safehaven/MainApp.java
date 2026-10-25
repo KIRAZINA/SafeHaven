@@ -2,9 +2,11 @@ package com.safehaven;
 
 import com.safehaven.db.DatabaseManager;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
+import javafx.scene.control.Alert;
 import javafx.stage.Stage;
 
 import java.io.IOException;
@@ -34,6 +36,25 @@ public class MainApp extends Application {
             fxmlLoader.setController(controller);
         }
         scene.setRoot(fxmlLoader.load());
+    }
+
+    /**
+     * Shows a notice on the login screen (also used after an inactivity logout).
+     */
+    public static void showLoginNotice(String message) {
+        Runnable show = () -> {
+            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.setTitle("Session Expired");
+            alert.setHeaderText(null);
+            alert.setContentText(message);
+            alert.showAndWait();
+        };
+
+        if (Platform.isFxApplicationThread()) {
+            show.run();
+        } else {
+            Platform.runLater(show);
+        }
     }
 
     private static Parent loadFXML(String fxml) throws IOException {

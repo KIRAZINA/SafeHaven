@@ -7,22 +7,32 @@ import com.safehaven.model.SharedFileEntry;
 import com.safehaven.model.User;
 import com.safehaven.service.IShareService;
 import com.safehaven.service.IStorageService;
+import com.safehaven.service.InactivityService;
 import com.safehaven.service.ShareService;
 import com.safehaven.service.StorageService;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleLongProperty;
 import javafx.beans.property.SimpleStringProperty;
+import javafx.beans.value.ChangeListener;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
 import javafx.concurrent.Task;
+import javafx.event.EventHandler;
 import javafx.fxml.FXML;
+import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.input.Dragboard;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseEvent;
+import javafx.scene.input.ScrollEvent;
 import javafx.scene.input.TransferMode;
 import javafx.stage.FileChooser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.crypto.SecretKey;
+import javax.security.auth.DestroyFailedException;
 import java.io.File;
 import java.security.PrivateKey;
 import java.text.SimpleDateFormat;
@@ -34,6 +44,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainController {
+
+    private static final Logger logger = LoggerFactory.getLogger(MainController.class);
 
     // General UI
     @FXML private Label welcomeLabel;
@@ -57,6 +69,19 @@ public class MainController {
     private User currentUser;
     private SecretKey secretKey;
     private PrivateKey privateKey; // Added: RSVP Private Key to unwrap shared FEKs
+
+    private InactivityService inactivityService;
+    private Scene inactivityScene;
+
+    private final EventHandler<MouseEvent> mouseActivityHandler = event -> recordActivity();
+    private final EventHandler<KeyEvent> keyActivityHandler = event -> recordActivity();
+    private final EventHandler<ScrollEvent> scrollActivityHandler = event -> recordActivity();
+
+    private final ChangeListener<Scene> sceneChangeListener = (observable, oldScene, newScene) -> {
+        if (newScene != null) {
+            attachInactivityHandlers(newScene);
+        }
+    };
 
     private IStorageService storageService = new StorageService();
     private IShareService shareService = new ShareService();
@@ -84,24 +109,32 @@ public class MainController {
     });
 
     public void initData(User user, char[] password) {
-        this.currentUser = user;
-        // Derive master AES key
-        this.secretKey = CryptoUtils.deriveMasterKey(password, user.getSalt());
-        
-        // Decrypt the user's RSA private key
-        if (user.getEncryptedPrivateKey() != null) {
-            this.privateKey = CryptoUtils.decryptPrivateKey(user.getEncryptedPrivateKey(), this.secretKey);
+        try {
+            this.currentUser = user;
+
+            // Derive master AES key
+            this.secretKey = CryptoUtils.deriveMasterKey(password, user.getSalt());
+
+            // Decrypt the user's RSA private key
+            if (user.getEncryptedPrivateKey() != null) {
+                this.privateKey = CryptoUtils.decryptPrivateKey(
+                        user.getEncryptedPrivateKey(), this.secretKey);
+            }
+
+            welcomeLabel.setText("Welcome, " + user.getUsername());
+
+            setupTables();
+            setupSearch();
+            refreshFileList();
+            refreshSharedFileList();
+            setupDragAndDrop();
+
+            startInactivityMonitoring();
+        } finally {
+            if (password != null) {
+                Arrays.fill(password, '\0');
+            }
         }
-
-        Arrays.fill(password, '\0');
-
-        welcomeLabel.setText("Welcome, " + user.getUsername());
-
-        setupTables();
-        setupSearch();
-        refreshFileList();
-        refreshSharedFileList();
-        setupDragAndDrop();
     }
 
     private void setupTables() {
@@ -391,19 +424,118 @@ public class MainController {
         });
     }
 
+    // ─── Session lifecycle / inactivity ─────────────────────────────────────
+
+    private void startInactivityMonitoring() {
+        stopInactivityMonitoring();
+
+        inactivityService = InactivityService.fromConfiguration(this::onInactivityTimeout);
+
+        if (welcomeLabel != null) {
+            welcomeLabel.sceneProperty().addListener(sceneChangeListener);
+            Scene scene = welcomeLabel.getScene();
+            if (scene != null) {
+                attachInactivityHandlers(scene);
+            }
+        }
+
+        inactivityService.start();
+    }
+
+    private void attachInactivityHandlers(Scene scene) {
+        if (scene == null || scene == inactivityScene) {
+            return;
+        }
+
+        detachInactivityHandlers();
+        inactivityScene = scene;
+        scene.addEventFilter(MouseEvent.ANY, mouseActivityHandler);
+        scene.addEventFilter(KeyEvent.ANY, keyActivityHandler);
+        scene.addEventFilter(ScrollEvent.ANY, scrollActivityHandler);
+    }
+
+    private void detachInactivityHandlers() {
+        if (inactivityScene == null) {
+            return;
+        }
+        inactivityScene.removeEventFilter(MouseEvent.ANY, mouseActivityHandler);
+        inactivityScene.removeEventFilter(KeyEvent.ANY, keyActivityHandler);
+        inactivityScene.removeEventFilter(ScrollEvent.ANY, scrollActivityHandler);
+        inactivityScene = null;
+    }
+
+    private void recordActivity() {
+        if (inactivityService != null) {
+            inactivityService.recordActivity();
+        }
+    }
+
+    private void stopInactivityMonitoring() {
+        if (welcomeLabel != null) {
+            welcomeLabel.sceneProperty().removeListener(sceneChangeListener);
+        }
+        detachInactivityHandlers();
+        if (inactivityService != null) {
+            inactivityService.close();
+            inactivityService = null;
+        }
+    }
+
+    private void onInactivityTimeout() {
+        Platform.runLater(() -> {
+            if (currentUser == null && secretKey == null && privateKey == null) {
+                return; // Already logged out.
+            }
+            try {
+                performLogout(true);
+            } catch (Exception e) {
+                logger.error("Failed to complete inactivity logout", e);
+                clearSessionSecrets();
+            }
+        });
+    }
+
     @FXML
     private void handleLogout() throws Exception {
+        performLogout(false);
+    }
+
+    private void performLogout(boolean sessionExpired) throws Exception {
+        stopInactivityMonitoring();
+        clearSessionSecrets();
+        executor.shutdown();
+        MainApp.setRoot("ui/login");
+        if (sessionExpired) {
+            MainApp.showLoginNotice("Session expired due to inactivity.");
+        }
+    }
+
+    /**
+     * Destroys key material and drops all session references. Kept
+     * package-private so lifecycle behaviour can be verified in tests.
+     */
+    void clearSessionSecrets() {
         if (secretKey != null) {
-            try { secretKey.destroy(); } catch (javax.security.auth.DestroyFailedException ignored) {}
+            try {
+                secretKey.destroy();
+            } catch (DestroyFailedException | RuntimeException e) {
+                logger.warn("Could not destroy master secret key", e);
+            }
         }
         if (privateKey != null) {
-            try { privateKey.destroy(); } catch (javax.security.auth.DestroyFailedException ignored) {}
+            try {
+                privateKey.destroy();
+            } catch (DestroyFailedException | RuntimeException e) {
+                logger.warn("Could not destroy RSA private key", e);
+            }
         }
-        executor.shutdown();
+
         this.secretKey = null;
         this.privateKey = null;
         this.currentUser = null;
-        MainApp.setRoot("ui/login");
+
+        // Encourage prompt reclamation of key material after logout.
+        System.gc();
     }
 
     private void showAlert(Alert.AlertType type, String title, String content) {

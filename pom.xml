@@ -32,6 +32,11 @@
             <version>2.1.214</version>
         </dependency>
         <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>9.22.3</version>
+        </dependency>
+        <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
             <version>2.0.7</version>
@@ -104,6 +109,7 @@
                 <configuration>
                     <forkCount>1</forkCount>
                     <reuseForks>false</reuseForks>
+                    <argLine>@{argLine} -XX:+DisableAttachMechanism</argLine>
                 </configuration>
             </plugin>
             <plugin>
@@ -112,6 +118,9 @@
                 <version>0.0.8</version>
                 <configuration>
                     <mainClass>com.safehaven.MainApp</mainClass>
+                    <options>
+                        <option>-XX:+DisableAttachMechanism</option>
+                    </options>
                 </configuration>
             </plugin>
             <plugin>

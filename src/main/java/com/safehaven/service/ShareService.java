@@ -5,7 +5,6 @@ import com.safehaven.db.DatabaseManager;
 import com.safehaven.model.FileMetadata;
 import com.safehaven.model.SharedFileEntry;
 import com.safehaven.model.User;
-import com.safehaven.utils.CompressionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -130,11 +129,8 @@ public class ShareService implements IShareService {
         // 1. Unwrap FEK using our RSA private key
         SecretKey fek = CryptoUtils.unwrapKey(entry.getWrappedFek(), recipientPrivateKey);
 
-        // 2. Decrypt & Decompress
-        byte[] encryptedData  = Files.readAllBytes(sourcePath);
-        byte[] compressedData = CryptoUtils.decrypt(encryptedData, fek);
-        byte[] originalData   = CompressionUtils.decompress(compressedData);
-
-        Files.write(dest.toPath(), originalData);
+        // 2. Stream decrypt & decompress directly to the destination.
+        //    Partial output is removed if decryption/GCM verification fails.
+        StorageService.decryptToFile(sourcePath, fek, dest);
     }
 }

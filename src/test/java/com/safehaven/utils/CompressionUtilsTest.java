@@ -53,4 +53,36 @@ class CompressionUtilsTest {
         byte[] garbage = new byte[]{0x00, 0x01, 0x02, 0x03};
         assertThrows(java.io.IOException.class, () -> CompressionUtils.decompress(garbage));
     }
+
+    @Test
+    void compressDecompressStream_RoundTrip() throws Exception {
+        byte[] original = new byte[256 * 1024];
+        new java.security.SecureRandom().nextBytes(original);
+
+        java.io.ByteArrayOutputStream compressed = new java.io.ByteArrayOutputStream();
+        long originalSize = CompressionUtils.compressStream(
+                new java.io.ByteArrayInputStream(original), compressed);
+        assertEquals(original.length, originalSize);
+
+        java.io.ByteArrayOutputStream decompressed = new java.io.ByteArrayOutputStream();
+        long decompressedSize = CompressionUtils.decompressStream(
+                new java.io.ByteArrayInputStream(compressed.toByteArray()), decompressed);
+
+        assertEquals(original.length, decompressedSize);
+        assertArrayEquals(original, decompressed.toByteArray());
+    }
+
+    @Test
+    void compressDecompressStream_EmptyInput() throws Exception {
+        java.io.ByteArrayOutputStream compressed = new java.io.ByteArrayOutputStream();
+        long originalSize = CompressionUtils.compressStream(
+                new java.io.ByteArrayInputStream(new byte[0]), compressed);
+        assertEquals(0, originalSize);
+
+        java.io.ByteArrayOutputStream decompressed = new java.io.ByteArrayOutputStream();
+        long decompressedSize = CompressionUtils.decompressStream(
+                new java.io.ByteArrayInputStream(compressed.toByteArray()), decompressed);
+        assertEquals(0, decompressedSize);
+        assertEquals(0, decompressed.size());
+    }
 }

@@ -203,6 +203,33 @@ public class ShareServiceTest {
     }
 
     @Test
+    void testDownloadSharedFile_CorruptedGcmTag_DeletesPartialOutput() throws Exception {
+        storageService.uploadFile(tempFile, alice, aliceMasterKey);
+        FileMetadata fileMeta = storageService.listFiles(alice).get(0);
+        shareService.shareFile(fileMeta, "bob", alice, aliceMasterKey);
+
+        SharedFileEntry entry = shareService.listSharedWithMe(bob).get(0);
+
+        Path storedFile = Paths.get(System.getProperty("user.home"), ".securestorage",
+                "alice", fileMeta.getId() + ".enc");
+        byte[] cipherBytes = Files.readAllBytes(storedFile);
+        cipherBytes[cipherBytes.length - 1] ^= 0x01;
+        Files.write(storedFile, cipherBytes);
+
+        File bobDest = File.createTempFile("bob_corrupt", ".txt");
+        Files.writeString(bobDest.toPath(), "partial output");
+        try {
+            assertThrows(Exception.class, () ->
+                    shareService.downloadSharedFile(entry, bobPrivateKey, bobDest),
+                    "A corrupted GCM tag must fail shared-file download");
+            assertFalse(Files.exists(bobDest.toPath()),
+                    "Partial output must be deleted when GCM verification fails");
+        } finally {
+            Files.deleteIfExists(bobDest.toPath());
+        }
+    }
+
+    @Test
     void testDownloadSharedFile_MissingFile() throws Exception {
         storageService.uploadFile(tempFile, alice, aliceMasterKey);
         FileMetadata fileMeta = storageService.listFiles(alice).get(0);

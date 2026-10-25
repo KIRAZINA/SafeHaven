@@ -8,6 +8,9 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -77,6 +80,76 @@ class MigrationTest {
              ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM FILES")) {
             assertTrue(rs.next());
             assertEquals(1, rs.getInt(1), "Should still have exactly 1 file after migration");
+        }
+
+        // The legacy database was created without secondary indexes; startup
+        // must add them via IF NOT EXISTS.
+        Map<String, String> indexes = new HashMap<>();
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT INDEX_NAME, TABLE_NAME FROM INFORMATION_SCHEMA.INDEXES " +
+                     "WHERE UPPER(INDEX_NAME) IN " +
+                     "('IDX_FILES_OWNER', 'IDX_SHARES_TO_USER', 'IDX_SHARES_FILE_ID')")) {
+            while (rs.next()) {
+                indexes.put(rs.getString(1).toUpperCase(Locale.ROOT),
+                        rs.getString(2).toUpperCase(Locale.ROOT));
+            }
+        }
+
+        assertEquals("FILES", indexes.get("IDX_FILES_OWNER"),
+                "idx_files_owner must be added to the pre-existing schema");
+        assertEquals("SHARES", indexes.get("IDX_SHARES_TO_USER"),
+                "idx_shares_to_user must be added to the pre-existing schema");
+        assertEquals("SHARES", indexes.get("IDX_SHARES_FILE_ID"),
+                "idx_shares_file_id must be added to the pre-existing schema");
+
+        // SHARES did not exist in this legacy schema; Flyway must create it.
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM SHARES")) {
+            assertTrue(rs.next());
+            assertEquals(0, rs.getInt(1), "Migrated SHARES table must start empty");
+        }
+
+        // A pre-existing non-empty schema is baselined at version 0, then the
+        // idempotent V1 script is applied.
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT \"version\", \"type\", \"success\" " +
+                     "FROM \"flyway_schema_history\" WHERE \"type\" = 'BASELINE'")) {
+
+            assertTrue(rs.next(), "Flyway must record the baseline for an existing schema");
+            assertEquals("0", rs.getString("version"));
+            assertTrue(rs.getBoolean("success"));
+            assertFalse(rs.next(), "Exactly one baseline row expected");
+        }
+
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT \"version\", \"type\", \"success\" " +
+                     "FROM \"flyway_schema_history\" WHERE \"version\" = '1'")) {
+
+            assertTrue(rs.next(), "Flyway must apply V1 to the baselined schema");
+            assertEquals("SQL", rs.getString("type"));
+            assertTrue(rs.getBoolean("success"));
+            assertFalse(rs.next(), "Exactly one V1 migration row expected");
+        }
+
+        // Application startup calls initialization every launch; repeat it to
+        // prove migration stays non-destructive and idempotent.
+        assertDoesNotThrow(DatabaseManager::initializeDatabase,
+                "Re-running initialization on a migrated database must not fail");
+
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT COUNT(*) FROM \"flyway_schema_history\" WHERE \"version\" = '1'")) {
+            assertTrue(rs.next());
+            assertEquals(1, rs.getInt(1),
+                    "Repeated startup must not append duplicate migration rows");
         }
     }
 }

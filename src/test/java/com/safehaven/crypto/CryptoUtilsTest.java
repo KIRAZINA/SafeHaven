@@ -1,9 +1,18 @@
 package com.safehaven.crypto;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -203,5 +212,141 @@ public class CryptoUtilsTest {
 
         assertEquals(count, seenIvs.size(),
             "Each encryption must produce a unique IV (no duplicates in " + count + " encryptions)");
+    }
+
+    // ── Streaming AES-GCM ────────────────────────────────────────────────────
+
+    @Test
+    void streamEncryptDecrypt_RoundTrip() throws Exception {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] original = "Streamed secret payload — 世界 🌍".getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream encrypted = new ByteArrayOutputStream();
+        CryptoUtils.encryptStream(new ByteArrayInputStream(original), encrypted, key);
+
+        byte[] cipherBytes = encrypted.toByteArray();
+        assertTrue(cipherBytes.length > 12,
+                "Ciphertext must contain a 12-byte IV plus ciphertext and tag");
+
+        ByteArrayOutputStream decrypted = new ByteArrayOutputStream();
+        CryptoUtils.decryptStream(new ByteArrayInputStream(cipherBytes), decrypted, key);
+
+        assertArrayEquals(original, decrypted.toByteArray(),
+                "Stream round-trip must recover the original bytes");
+    }
+
+    @Test
+    void streamEncrypt_UsesFreshTwelveByteIvHeader() throws Exception {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "IV header check".getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream first = new ByteArrayOutputStream();
+        ByteArrayOutputStream second = new ByteArrayOutputStream();
+        CryptoUtils.encryptStream(new ByteArrayInputStream(data), first, key);
+        CryptoUtils.encryptStream(new ByteArrayInputStream(data), second, key);
+
+        byte[] firstBytes = first.toByteArray();
+        byte[] secondBytes = second.toByteArray();
+
+        assertFalse(Arrays.equals(Arrays.copyOf(firstBytes, 12),
+                                  Arrays.copyOf(secondBytes, 12)),
+                "Each stream encryption must use a fresh random IV");
+
+        ByteArrayOutputStream roundTrip = new ByteArrayOutputStream();
+        CryptoUtils.decryptStream(new ByteArrayInputStream(firstBytes), roundTrip, key);
+        assertArrayEquals(data, roundTrip.toByteArray());
+    }
+
+    @Test
+    void streamEncryptDecrypt_LargeSyntheticPayload(@TempDir Path tempDir) throws Exception {
+        final long payloadSize = 4L * 1024 * 1024; // 4 MiB, never materialised in one array
+        SecretKey key = CryptoUtils.generateFileKey();
+        Path encrypted = tempDir.resolve("large.enc");
+        Path decrypted = tempDir.resolve("large.dec");
+
+        try (InputStream in = syntheticStream(payloadSize);
+             OutputStream out = Files.newOutputStream(encrypted)) {
+            CryptoUtils.encryptStream(in, out, key);
+        }
+
+        try (InputStream in = Files.newInputStream(encrypted);
+             OutputStream out = Files.newOutputStream(decrypted)) {
+            CryptoUtils.decryptStream(in, out, key);
+        }
+
+        assertEquals(payloadSize, Files.size(decrypted),
+                "Decrypted size must match the synthetic payload size");
+
+        try (InputStream in = Files.newInputStream(decrypted)) {
+            byte[] buffer = new byte[8192];
+            long position = 0;
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                for (int i = 0; i < read; i++) {
+                    assertEquals((byte) ((position * 31 + 7) & 0xFF), buffer[i],
+                            "Large payload byte mismatch at offset " + position);
+                    position++;
+                }
+            }
+            assertEquals(payloadSize, position);
+        }
+    }
+
+    @Test
+    void decryptStream_ShortIv_Throws() {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] tooShort = new byte[11];
+
+        assertThrows(IOException.class, () ->
+                CryptoUtils.decryptStream(
+                        new ByteArrayInputStream(tooShort),
+                        new ByteArrayOutputStream(),
+                        key),
+                "Streams shorter than the 12-byte IV must be rejected");
+    }
+
+    @Test
+    void decryptStream_CorruptedTag_Throws() throws Exception {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = "Authenticated stream".getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream encrypted = new ByteArrayOutputStream();
+        CryptoUtils.encryptStream(new ByteArrayInputStream(data), encrypted, key);
+        byte[] cipherBytes = encrypted.toByteArray();
+
+        cipherBytes[cipherBytes.length - 1] ^= 0x01;
+
+        assertThrows(Exception.class, () ->
+                CryptoUtils.decryptStream(
+                        new ByteArrayInputStream(cipherBytes),
+                        new ByteArrayOutputStream(),
+                        key),
+                "Corrupting the GCM tag must fail stream decryption");
+    }
+
+    private static InputStream syntheticStream(long length) {
+        return new InputStream() {
+            private long position = 0;
+
+            @Override
+            public int read() {
+                if (position >= length) {
+                    return -1;
+                }
+                return (int) ((position++ * 31 + 7) & 0xFF);
+            }
+
+            @Override
+            public int read(byte[] buffer, int offset, int len) {
+                if (position >= length) {
+                    return -1;
+                }
+                int count = (int) Math.min(len, length - position);
+                for (int i = 0; i < count; i++) {
+                    buffer[offset + i] = (byte) ((position++ * 31 + 7) & 0xFF);
+                }
+                return count;
+            }
+        };
     }
 }

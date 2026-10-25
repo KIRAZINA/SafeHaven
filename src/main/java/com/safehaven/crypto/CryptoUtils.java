@@ -1,12 +1,17 @@
 package com.safehaven.crypto;
 
 import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -30,8 +35,10 @@ public class CryptoUtils {
     private static final int    GCM_TAG_LENGTH = 128;
     private static final int    PBKDF2_ITERATIONS = 65536;
     private static final int    SALT_LENGTH    = 16;
+    private static final int    STREAM_BUFFER_SIZE = 8192;
     private static final String AUTH_DOMAIN    = "safehaven-auth-v1";
     private static final String MASTER_KEY_DOMAIN = "safehaven-mk-v1";
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     // ── Password / Master key ────────────────────────────────────────────────
 
@@ -144,6 +151,85 @@ public class CryptoUtils {
             return cipher.doFinal(cipherText);
         } catch (Exception e) {
             throw new RuntimeException("Error decrypting data", e);
+        }
+    }
+
+    // ── Symmetric AES-GCM stream processing ──────────────────────────────────
+
+    /**
+     * Encrypts the bytes read from {@code in} to {@code out} using AES-256-GCM.
+     * The output format is {@code IV (12 bytes) || ciphertext+tag}. A fresh
+     * random IV is generated for every call and written before the ciphertext.
+     * The supplied {@code out} stream is closed by this method.
+     */
+    public static void encryptStream(InputStream in, OutputStream out, SecretKey key) throws Exception {
+        try (CipherOutputStream cipherOut = createEncryptingOutputStream(out, key)) {
+            copyStream(in, cipherOut);
+        }
+    }
+
+    /**
+     * Wraps {@code out} in an AES-256-GCM {@link CipherOutputStream}. The
+     * 12-byte IV is generated and written to {@code out} immediately, before
+     * any ciphertext. The caller owns the returned stream and must close it so
+     * that the GCM authentication tag is written.
+     */
+    public static CipherOutputStream createEncryptingOutputStream(OutputStream out, SecretKey key)
+            throws Exception {
+        byte[] iv = new byte[GCM_IV_LENGTH];
+        SECURE_RANDOM.nextBytes(iv);
+
+        Cipher cipher = Cipher.getInstance(ALGORITHM);
+        cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+
+        // Header must be written before any ciphertext.
+        out.write(iv);
+        out.flush();
+
+        return new CipherOutputStream(out, cipher);
+    }
+
+    /**
+     * Decrypts AES-256-GCM data produced by {@link #encryptStream} from
+     * {@code in} to {@code out}. The first 12 bytes of {@code in} are consumed
+     * as the IV. The supplied {@code in} stream is closed; {@code out} is
+     * flushed but left open for the caller.
+     */
+    public static void decryptStream(InputStream in, OutputStream out, SecretKey key) throws Exception {
+        try (CipherInputStream cipherIn = createDecryptingInputStream(in, key)) {
+            copyStream(cipherIn, out);
+        }
+        out.flush();
+    }
+
+    /**
+     * Wraps {@code in} in an AES-256-GCM {@link CipherInputStream}, reading
+     * exactly the leading 12-byte IV first. The caller owns the returned
+     * stream and must read it to EOF so the GCM tag is verified.
+     */
+    public static CipherInputStream createDecryptingInputStream(InputStream in, SecretKey key)
+            throws Exception {
+        byte[] iv = new byte[GCM_IV_LENGTH];
+        int offset = 0;
+        while (offset < GCM_IV_LENGTH) {
+            int read = in.read(iv, offset, GCM_IV_LENGTH - offset);
+            if (read == -1) {
+                throw new IOException(
+                        "Encrypted stream is too short to contain a " + GCM_IV_LENGTH + "-byte IV");
+            }
+            offset += read;
+        }
+
+        Cipher cipher = Cipher.getInstance(ALGORITHM);
+        cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+        return new CipherInputStream(in, cipher);
+    }
+
+    private static void copyStream(InputStream in, OutputStream out) throws IOException {
+        byte[] buffer = new byte[STREAM_BUFFER_SIZE];
+        int read;
+        while ((read = in.read(buffer)) != -1) {
+            out.write(buffer, 0, read);
         }
     }
 
