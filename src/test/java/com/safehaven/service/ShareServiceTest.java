@@ -58,15 +58,15 @@ public class ShareServiceTest {
         shareService = new ShareService();
 
         // Register Users
-        authService.register("alice", "passwordA");
-        authService.register("bob", "passwordB");
+        authService.register("alice", "PasswordA1!");
+        authService.register("bob", "PasswordB1!");
 
         // Login to get full loaded user objects including public/private keys
-        alice = authService.login("alice", "passwordA");
-        aliceMasterKey = CryptoUtils.deriveMasterKey("passwordA".toCharArray(), alice.getSalt());
+        alice = authService.login("alice", "PasswordA1!");
+        aliceMasterKey = CryptoUtils.deriveMasterKey("PasswordA1!".toCharArray(), alice.getSalt());
 
-        bob = authService.login("bob", "passwordB");
-        bobMasterKey = CryptoUtils.deriveMasterKey("passwordB".toCharArray(), bob.getSalt());
+        bob = authService.login("bob", "PasswordB1!");
+        bobMasterKey = CryptoUtils.deriveMasterKey("PasswordB1!".toCharArray(), bob.getSalt());
         bobPrivateKey = CryptoUtils.decryptPrivateKey(bob.getEncryptedPrivateKey(), bobMasterKey);
 
         tempFile = File.createTempFile("test_share", ".txt");
@@ -153,9 +153,9 @@ public class ShareServiceTest {
     @Test
     void testShareFile_MultipleRecipients() throws Exception {
         // Register and login Charlie
-        authService.register("charlie", "passwordC");
-        User charlie = authService.login("charlie", "passwordC");
-        SecretKey charlieMasterKey = CryptoUtils.deriveMasterKey("passwordC".toCharArray(), charlie.getSalt());
+        authService.register("charlie", "PasswordC1!");
+        User charlie = authService.login("charlie", "PasswordC1!");
+        SecretKey charlieMasterKey = CryptoUtils.deriveMasterKey("PasswordC1!".toCharArray(), charlie.getSalt());
         PrivateKey charliePrivateKey = CryptoUtils.decryptPrivateKey(charlie.getEncryptedPrivateKey(), charlieMasterKey);
 
         storageService.uploadFile(tempFile, alice, aliceMasterKey);
@@ -245,7 +245,8 @@ public class ShareServiceTest {
 
         File bobDest = File.createTempFile("bob_missing", ".txt");
         try {
-            java.io.IOException ex = assertThrows(java.io.IOException.class, () -> {
+            com.safehaven.exception.StorageException ex = assertThrows(
+                    com.safehaven.exception.StorageException.class, () -> {
                 shareService.downloadSharedFile(entry, bobPrivateKey, bobDest);
             });
             assertTrue(ex.getMessage().contains("Shared file not found on disk"));

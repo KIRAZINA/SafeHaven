@@ -1,12 +1,10 @@
 package com.safehaven.service;
 
+import com.safehaven.utils.AppConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -26,7 +24,7 @@ public class InactivityService implements AutoCloseable {
     private static final Logger logger = LoggerFactory.getLogger(InactivityService.class);
 
     public static final long DEFAULT_TIMEOUT_SECONDS = 300L;
-    public static final String TIMEOUT_PROPERTY = "session.inactivity.timeout.seconds";
+    public static final String TIMEOUT_PROPERTY = AppConfig.KEY_INACTIVITY_TIMEOUT;
 
     private final long timeoutMillis;
     private final Runnable onTimeout;
@@ -56,43 +54,18 @@ public class InactivityService implements AutoCloseable {
 
     /**
      * Builds a service using {@code session.inactivity.timeout.seconds} from
-     * {@code application.properties}, falling back to 300 seconds.
+     * {@link AppConfig}, falling back to 300 seconds.
      */
     public static InactivityService fromConfiguration(Runnable onTimeout) {
         return new InactivityService(loadConfiguredTimeoutSeconds(), onTimeout);
     }
 
     /**
-     * Reads the configured inactivity timeout. Invalid/missing values fall
-     * back to {@link #DEFAULT_TIMEOUT_SECONDS}.
+     * Reads the configured inactivity timeout through {@link AppConfig}.
+     * Invalid/missing values fall back to {@link #DEFAULT_TIMEOUT_SECONDS}.
      */
     public static long loadConfiguredTimeoutSeconds() {
-        Properties properties = new Properties();
-        try (InputStream in = InactivityService.class
-                .getResourceAsStream("/application.properties")) {
-            if (in != null) {
-                properties.load(in);
-            }
-        } catch (IOException e) {
-            logger.warn("Could not read inactivity timeout configuration; using default", e);
-            return DEFAULT_TIMEOUT_SECONDS;
-        }
-
-        String raw = properties.getProperty(TIMEOUT_PROPERTY);
-        if (raw == null || raw.isBlank()) {
-            return DEFAULT_TIMEOUT_SECONDS;
-        }
-
-        try {
-            long seconds = Long.parseLong(raw.trim());
-            if (seconds > 0) {
-                return seconds;
-            }
-            logger.warn("Ignoring non-positive inactivity timeout: {}", raw);
-        } catch (NumberFormatException e) {
-            logger.warn("Ignoring invalid inactivity timeout: {}", raw);
-        }
-        return DEFAULT_TIMEOUT_SECONDS;
+        return AppConfig.getInactivityTimeoutSeconds();
     }
 
     /** Starts (or restarts) inactivity monitoring. */
@@ -170,7 +143,8 @@ public class InactivityService implements AutoCloseable {
             try {
                 onTimeout.run();
             } catch (RuntimeException e) {
-                logger.error("Inactivity timeout handler failed", e);
+                logger.error("Inactivity timeout handler failed: {}",
+                        e.getClass().getSimpleName());
             }
         }
     }

@@ -40,7 +40,7 @@ public class AuthServiceTest {
     @Test
     void testRegisterAndLogin() {
         String username = "testuser";
-        String password = "password123";
+        String password = "Password123!";
 
         boolean registered = authService.register(username, password);
         assertTrue(registered, "Registration should succeed");
@@ -55,10 +55,10 @@ public class AuthServiceTest {
     @Test
     void testDuplicateRegistration() {
         String username = "duplicate";
-        String password = "password";
+        String password = "Password123!";
 
         authService.register(username, password);
-        boolean secondAttempt = authService.register(username, "newpassword");
+        boolean secondAttempt = authService.register(username, "Newpassword1!");
 
         assertFalse(secondAttempt, "Duplicate registration should fail");
     }
@@ -66,10 +66,10 @@ public class AuthServiceTest {
     @Test
     void testWrongPassword() {
         String username = "wrongpass";
-        String password = "password";
+        String password = "Password123!";
 
         authService.register(username, password);
-        User user = authService.login(username, "wrong");
+        User user = authService.login(username, "WrongPass1!");
 
         assertNull(user, "Login with wrong password should return null");
     }
@@ -77,7 +77,7 @@ public class AuthServiceTest {
     @Test
     void testLogin_ReturnsValidRsaKeys() throws Exception {
         String username = "rsa_user";
-        String password = "password";
+        String password = "Password123!";
 
         authService.register(username, password);
         User user = authService.login(username, password);
@@ -102,7 +102,7 @@ public class AuthServiceTest {
         // user's encrypted private key. Only the domain-separated master key
         // should work.
         String username = "verifier_is_not_mk";
-        String password = "mySecret123";
+        String password = "MySecret123!";
 
         authService.register(username, password);
 
@@ -137,7 +137,7 @@ public class AuthServiceTest {
 
     @Test
     void testLogin_NonExistentUsername_returnsNull() {
-        User user = authService.login("nonexistent_user", "anyPassword");
+        User user = authService.login("nonexistent_user", "AnyPassword1!");
         assertNull(user, "Login for a nonexistent username should return null without throwing");
     }
 
@@ -147,10 +147,69 @@ public class AuthServiceTest {
         // Then register should return false and log error.
         DatabaseManager.setDbUrl("jdbc:invalid:url");
         
-        boolean success = authService.register("failuser", "pass");
+        boolean success = authService.register("failuser", "Passw0rd!");
         assertFalse(success, "Registration should fail gracefully on DB error");
         
         // Restore for cleanup (important because of @BeforeEach)
         DatabaseManager.setDbUrl(TEST_DB);
+    }
+
+    @Test
+    void testRegister_RejectsInvalidUsernames() {
+        assertThrows(IllegalArgumentException.class,
+                () -> authService.register("bad name", "Password1!"));
+        assertThrows(IllegalArgumentException.class,
+                () -> authService.register("bad/name", "Password1!"));
+        assertThrows(IllegalArgumentException.class,
+                () -> authService.register("ab", "Password1!"));
+        assertThrows(IllegalArgumentException.class,
+                () -> authService.register("a".repeat(33), "Password1!"));
+        assertThrows(IllegalArgumentException.class,
+                () -> authService.register(null, "Password1!"));
+    }
+
+    @Test
+    void testRegister_RejectsWeakPasswordWithDescriptiveMessage() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> authService.register("valid_user", "weak"));
+
+        String message = ex.getMessage();
+        assertNotNull(message);
+        assertTrue(message.contains("Invalid password"), message);
+        assertTrue(message.contains("at least 8"), message);
+        assertTrue(message.contains("uppercase"), message);
+        assertTrue(message.contains("digit"), message);
+        assertTrue(message.contains("special"), message);
+    }
+
+    @Test
+    void testRegister_DoesNotPersistInvalidRegistration() throws Exception {
+        assertThrows(IllegalArgumentException.class,
+                () -> authService.register("valid_user", "alllowercase1!"));
+
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM USERS")) {
+            assertTrue(rs.next());
+            assertEquals(0, rs.getInt(1),
+                    "Validation must reject the account before any row is written");
+        }
+    }
+
+    @Test
+    void testRegister_AcceptsBoundaryLengths() {
+        assertTrue(authService.register("abc", "Abcdef1!"),
+                "3-character username and 8-character password are valid");
+        assertTrue(authService.register("a".repeat(32), "Aa1!" + "a".repeat(124)),
+                "32-character username and 128-character password are valid");
+    }
+
+    @Test
+    void testRegisterWithCharArray_WipesPasswordBuffer() {
+        char[] password = "Password1!".toCharArray();
+
+        assertTrue(authService.register("char_user", password));
+        assertArrayEquals(new char[password.length], password,
+                "The service should wipe the caller's password buffer");
     }
 }

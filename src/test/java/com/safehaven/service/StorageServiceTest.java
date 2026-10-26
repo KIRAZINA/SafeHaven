@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 
 import javax.crypto.SecretKey;
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -48,7 +47,7 @@ public class StorageServiceTest {
         storageService = new StorageService();
 
         // Fix #3 — register user via AuthService so testUser.getSalt() matches the DB salt
-        String rawPassword = "password";
+        String rawPassword = "Passw0rd!";
         new AuthService().register("storage_user", rawPassword);
 
         // Retrieve the salt that was actually stored
@@ -120,7 +119,7 @@ public class StorageServiceTest {
 
     @Test
     void getFileCount_CountsOnlyTheUsersFiles() throws Exception {
-        new AuthService().register("other_user", "passwordO");
+        new AuthService().register("other_user", "PasswordO1!");
         insertFile("owned-1", "a.txt", "storage_user", 10L);
         insertFile("owned-2", "b.txt", "storage_user", 20L);
         insertFile("foreign-1", "c.txt", "other_user", 30L);
@@ -202,7 +201,7 @@ public class StorageServiceTest {
     void testDeleteTransactional_RemovesSharesAndFileAtomically() throws Exception {
         // Register a second user and share the file with them
         AuthService auth = new AuthService();
-        auth.register("recipient_user", "passwordR");
+        auth.register("recipient_user", "PasswordR1!");
 
         storageService.uploadFile(tempFile, testUser, secretKey);
         FileMetadata meta = storageService.listFiles(testUser).get(0);
@@ -303,9 +302,9 @@ public class StorageServiceTest {
 
         File destFile = File.createTempFile("fail", ".txt");
         try {
-            assertThrows(IOException.class, () -> {
+            assertThrows(com.safehaven.exception.StorageException.class, () -> {
                 storageService.downloadFile(meta, testUser, secretKey, destFile);
-            }, "Should throw IOException if physical file is missing");
+            }, "Should throw StorageException if physical file is missing");
         } finally {
             destFile.delete();
         }

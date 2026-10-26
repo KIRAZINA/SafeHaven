@@ -2,6 +2,7 @@ package com.safehaven.service;
 
 import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.db.DatabaseManager;
+import com.safehaven.exception.StorageException;
 import com.safehaven.model.FileMetadata;
 import com.safehaven.model.SharedFileEntry;
 import com.safehaven.model.User;
@@ -81,7 +82,7 @@ public class ShareService implements IShareService {
                 // If we hit a true duplicate logically, we could handle it. 
                 // Currently allows sharing multiple times which is fine (overwrite UI will handle).
             }
-            throw e;
+            throw new StorageException("Could not save the shared file.", e);
         }
     }
 
@@ -112,7 +113,9 @@ public class ShareService implements IShareService {
                 }
             }
         } catch (SQLException e) {
-            logger.error("Failed to list shared files for user: {}", user.getUsername(), e);
+            logger.error("Failed to list shared files for user {}: {}",
+                    user.getUsername(), e.getClass().getSimpleName());
+            throw new StorageException("Could not load shared files.", e);
         }
         return shares;
     }
@@ -235,7 +238,8 @@ public class ShareService implements IShareService {
         // Source file is in the fromUser's folder
         Path sourcePath = Paths.get(StorageService.STORAGE_DIR, entry.getFromUser(), entry.getFileId() + ".enc");
         if (!Files.exists(sourcePath)) {
-            throw new IOException("Shared file not found on disk. The owner might have deleted it.");
+            throw new StorageException(
+                    "Shared file not found on disk. The owner might have deleted it.");
         }
 
         // 1. Unwrap FEK using our RSA private key

@@ -50,9 +50,9 @@ class ConcurrencyTest {
         authService = new AuthService();
         storageService = new StorageService();
 
-        authService.register("concurrent_user", "password");
-        testUser = authService.login("concurrent_user", "password");
-        masterKey = CryptoUtils.deriveMasterKey("password".toCharArray(), testUser.getSalt());
+        authService.register("concurrent_user", "Password1!");
+        testUser = authService.login("concurrent_user", "Password1!");
+        masterKey = CryptoUtils.deriveMasterKey("Password1!".toCharArray(), testUser.getSalt());
     }
 
     @AfterEach

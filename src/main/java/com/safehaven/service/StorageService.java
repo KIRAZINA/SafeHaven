@@ -2,8 +2,11 @@ package com.safehaven.service;
 
 import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.db.DatabaseManager;
+import com.safehaven.exception.CryptoException;
+import com.safehaven.exception.StorageException;
 import com.safehaven.model.FileMetadata;
 import com.safehaven.model.User;
+import com.safehaven.utils.AppConfig;
 import com.safehaven.utils.CompressionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,45 +30,24 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Properties;
 import java.util.UUID;
 
 public class StorageService implements IStorageService {
     private static final Logger logger = LoggerFactory.getLogger(StorageService.class);
     private static final int BUFFER_SIZE = 8192;
-    static final String STORAGE_DIR;
-
-    static {
-        Properties props = new Properties();
-        String dir = null;
-        try (InputStream in = StorageService.class
-                .getResourceAsStream("/application.properties")) {
-            if (in != null) {
-                props.load(in);
-                dir = props.getProperty("storage.dir");
-            }
-        } catch (IOException e) {
-            logger.warn("Could not load application.properties, using default storage dir", e);
-        }
-        if (dir == null || dir.isBlank()) {
-            dir = System.getProperty("user.home") + "/.securestorage";
-        }
-        // Resolve ${user.home} placeholder used in the default property value
-        if (dir.contains("${user.home}")) {
-            dir = dir.replace("${user.home}", System.getProperty("user.home"));
-        }
-        STORAGE_DIR = dir;
-    }
+    static final String STORAGE_DIR = AppConfig.getStorageDir();
 
     public StorageService() {
         File dirFile = new File(STORAGE_DIR);
         if (!dirFile.exists()) {
             if (!dirFile.mkdirs()) {
-                throw new RuntimeException(
-                        "Cannot create storage directory: " + dirFile.getAbsolutePath());
+                throw new StorageException(
+                        "Could not create the storage directory. "
+                                + "Please check that the application can write to its storage location.");
             }
         }
     }
@@ -119,7 +101,7 @@ public class StorageService implements IStorageService {
             pstmt.executeUpdate();
         } catch (SQLException e) {
             deletePartialFile(destPath, e);
-            throw e;
+            throw new StorageException("Could not save the file metadata.", e);
         }
     }
 
@@ -127,7 +109,7 @@ public class StorageService implements IStorageService {
             throws Exception {
         Path sourcePath = Paths.get(STORAGE_DIR, user.getUsername(), meta.getId() + ".enc");
         if (!Files.exists(sourcePath)) {
-            throw new IOException("File not found on disk");
+            throw new StorageException("File not found. It may have been removed.");
         }
 
         // 1. Recover FEK
@@ -158,8 +140,23 @@ public class StorageService implements IStorageService {
             }
         } catch (Exception e) {
             deletePartialFile(destPath, e);
+            if (containsCryptoFailure(e)) {
+                throw new CryptoException(
+                        "File integrity check failed. The file may be corrupted or was tampered with.",
+                        e);
+            }
             throw e;
         }
+    }
+
+    private static boolean containsCryptoFailure(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            if (current instanceof CryptoException
+                    || current instanceof GeneralSecurityException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void deletePartialFile(Path path, Exception cause) {
@@ -167,7 +164,8 @@ public class StorageService implements IStorageService {
             Files.deleteIfExists(path);
         } catch (IOException cleanupFailure) {
             cause.addSuppressed(cleanupFailure);
-            logger.warn("Could not delete partially written file: {}", path, cleanupFailure);
+            logger.warn("Could not delete a partially written file: {}",
+                    cleanupFailure.getClass().getSimpleName());
         }
     }
 
@@ -193,7 +191,9 @@ public class StorageService implements IStorageService {
                 }
             }
         } catch (SQLException e) {
-            logger.error("Failed to list files for user: {}", user.getUsername(), e);
+            logger.error("Failed to list files for user {}: {}",
+                    user.getUsername(), e.getClass().getSimpleName());
+            throw new StorageException("Could not load your files.", e);
         }
         return files;
     }
@@ -303,8 +303,9 @@ public class StorageService implements IStorageService {
         try (Connection conn = DatabaseManager.getConnection()) {
             deleteFileWithConnection(meta, user, conn);
         } catch (SQLException e) {
-            logger.error("Failed to acquire connection for delete: {}", meta.getId(), e);
-            throw new RuntimeException("Failed to delete file record", e);
+            logger.error("Failed to acquire connection for delete of file {}: {}",
+                    meta.getId(), e.getClass().getSimpleName());
+            throw new StorageException("Failed to delete file record", e);
         }
     }
 
@@ -344,15 +345,17 @@ public class StorageService implements IStorageService {
                 // If disk deletion fails, rollback the DB changes so the
                 // file record remains intact.
                 conn.rollback();
-                logger.error("Could not delete file from disk: {}", path, e);
-                throw new RuntimeException("Failed to delete file from disk", e);
+                logger.error("Could not delete encrypted file for file {}: {}",
+                        meta.getId(), e.getClass().getSimpleName());
+                throw new StorageException("Failed to delete file from disk", e);
             }
 
             conn.commit();
         } catch (SQLException e) {
-            logger.error("Failed to delete file record from DB: {}", meta.getId(), e);
+            logger.error("Failed to delete file record for file {}: {}",
+                    meta.getId(), e.getClass().getSimpleName());
             try { conn.rollback(); } catch (SQLException ignored) {}
-            throw new RuntimeException("Failed to delete file record", e);
+            throw new StorageException("Failed to delete file record", e);
         }
     }
 }

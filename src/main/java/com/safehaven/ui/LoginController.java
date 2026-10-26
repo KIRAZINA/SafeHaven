@@ -1,17 +1,20 @@
 package com.safehaven.ui;
 
+import com.safehaven.exception.AuthenticationException;
 import com.safehaven.model.User;
 import com.safehaven.service.AuthService;
 import com.safehaven.service.IAuthService;
+import com.safehaven.utils.ValidationUtils;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
-import javafx.scene.control.Alert;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 public class LoginController {
 
@@ -30,11 +33,12 @@ public class LoginController {
 
     @FXML
     private void handleLogin() throws IOException {
-        String username = usernameField.getText().trim();
+        String username = usernameField.getText() == null ? "" : usernameField.getText().trim();
         String password = passwordField.getText();
 
-        if (username.isEmpty() || password.isEmpty()) {
-            showAlert(Alert.AlertType.ERROR, "Error", "Please enter username and password.");
+        List<String> validationErrors = credentialValidationErrors(username, password);
+        if (!validationErrors.isEmpty()) {
+            showValidationAlert("Invalid Login Details", validationErrors);
             return;
         }
 
@@ -53,32 +57,61 @@ public class LoginController {
                 Arrays.fill(passwordChars, '\0');  // Fix #2 — clear password from memory
             }
         } else {
-            showAlert(Alert.AlertType.ERROR, "Login Error", "Invalid username or password.");
+            ErrorHandler.showError("Login Error", "Authentication failed",
+                    "Invalid username or password.");
         }
     }
 
     @FXML
     private void handleRegister() {
-        String username = usernameField.getText().trim();
+        String username = usernameField.getText() == null ? "" : usernameField.getText().trim();
         String password = passwordField.getText();
 
-        if (username.isEmpty() || password.isEmpty()) {
-            showAlert(Alert.AlertType.ERROR, "Error", "Please enter username and password.");
+        List<String> validationErrors = credentialValidationErrors(username, password);
+        if (!validationErrors.isEmpty()) {
+            showValidationAlert("Registration Failed", validationErrors);
             return;
         }
 
-        if (authService.register(username, password)) {
-            showAlert(Alert.AlertType.INFORMATION, "Done", "Registration successful. Please log in.");
-        } else {
-            showAlert(Alert.AlertType.ERROR, "Error", "Registration failed — username already exists.");
+        char[] passwordChars = password.toCharArray();
+        try {
+            if (authService.register(username, passwordChars)) {
+                ErrorHandler.showInfo("Registration Complete", "Account created",
+                        "Registration successful. Please log in.");
+            } else {
+                ErrorHandler.showError("Registration Failed", "Username unavailable",
+                        "That username is already taken. Please choose another one.");
+            }
+        } catch (AuthenticationException e) {
+            // Defense in depth: AuthService enforces the same rules.
+            ErrorHandler.showError("Registration Failed", "Invalid details", e.getMessage());
+        } finally {
+            Arrays.fill(passwordChars, '\0');
         }
     }
 
-    private void showAlert(Alert.AlertType type, String title, String content) {
-        Alert alert = new Alert(type);  // Fix #11 — use correct AlertType
-        alert.setTitle(title);
-        alert.setHeaderText(null);
-        alert.setContentText(content);
-        alert.showAndWait();
+    /**
+     * Collects every credential rule violation so the UI can list exactly what
+     * the user must fix instead of failing one rule at a time.
+     */
+    private static List<String> credentialValidationErrors(String username, String password) {
+        List<String> errors = new ArrayList<>(
+                ValidationUtils.getUsernameValidationErrors(username));
+
+        char[] passwordChars = password == null ? new char[0] : password.toCharArray();
+        try {
+            errors.addAll(ValidationUtils.getPasswordValidationErrors(passwordChars));
+        } finally {
+            Arrays.fill(passwordChars, '\0');
+        }
+        return errors;
+    }
+
+    private void showValidationAlert(String title, List<String> errors) {
+        StringBuilder message = new StringBuilder("Please correct the following:");
+        for (String error : errors) {
+            message.append("\n\n• ").append(error);
+        }
+        ErrorHandler.showError(title, "Please review your input", message.toString());
     }
 }

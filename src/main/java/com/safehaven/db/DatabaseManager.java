@@ -1,5 +1,6 @@
 package com.safehaven.db;
 
+import com.safehaven.utils.AppConfig;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.flywaydb.core.Flyway;
@@ -8,18 +9,15 @@ import org.flywaydb.core.api.output.MigrateResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.util.Properties;
 
 public class DatabaseManager {
     private static final Logger logger = LoggerFactory.getLogger(DatabaseManager.class);
 
     static final String POOL_NAME = "SafeHaven-HikariPool";
-    static final int DEFAULT_MAX_POOL_SIZE = 10;
-    static final int DEFAULT_MIN_IDLE = 2;
+    static final int DEFAULT_MAX_POOL_SIZE = AppConfig.DEFAULT_DB_POOL_MAX_SIZE;
+    static final int DEFAULT_MIN_IDLE = AppConfig.DEFAULT_DB_POOL_MIN_IDLE;
     private static final long IDLE_TIMEOUT_MILLIS = 30_000L;
     private static final long CONNECTION_TIMEOUT_MILLIS = 10_000L;
 
@@ -38,39 +36,16 @@ public class DatabaseManager {
     }
 
     private static void loadConfig() {
-        Properties props = new Properties();
-        try (InputStream in = DatabaseManager.class
-                .getResourceAsStream("/application.properties")) {
-            if (in != null) {
-                props.load(in);
-            }
-        } catch (IOException e) {
-            logger.warn("Could not load application.properties, using defaults", e);
-        }
-        dbUrl      = props.getProperty("jdbc.url",
-                "jdbc:h2:./safehaven;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE");
-        dbUser     = props.getProperty("jdbc.user",     "sa");
-        dbPassword = props.getProperty("jdbc.password", "");
+        dbUrl      = AppConfig.getJdbcUrl();
+        dbUser     = AppConfig.getJdbcUser();
+        dbPassword = AppConfig.getJdbcPassword();
 
-        maxPoolSize = positiveInt(props.getProperty("db.pool.max.size"), DEFAULT_MAX_POOL_SIZE);
-        minIdle     = positiveInt(props.getProperty("db.pool.min.idle"), DEFAULT_MIN_IDLE);
+        maxPoolSize = AppConfig.getDbPoolMaxSize();
+        minIdle     = AppConfig.getDbPoolMinIdle();
         if (minIdle > maxPoolSize) {
             logger.warn("db.pool.min.idle ({}) exceeds db.pool.max.size ({}); using {}",
                     minIdle, maxPoolSize, maxPoolSize);
             minIdle = maxPoolSize;
-        }
-    }
-
-    private static int positiveInt(String raw, int fallback) {
-        if (raw == null || raw.isBlank()) {
-            return fallback;
-        }
-        try {
-            int value = Integer.parseInt(raw.trim());
-            return value > 0 ? value : fallback;
-        } catch (NumberFormatException e) {
-            logger.warn("Ignoring invalid pool size '{}'; using {}", raw, fallback);
-            return fallback;
         }
     }
 
@@ -120,7 +95,8 @@ public class DatabaseManager {
                 dataSource = ds;
             } catch (RuntimeException e) {
                 dataSource = null;
-                logger.error("Failed to initialize database pool", e);
+                logger.error("Failed to initialize database pool: {}",
+                        e.getClass().getSimpleName());
                 throw new RuntimeException("Failed to initialize database", e);
             }
         }
@@ -137,7 +113,8 @@ public class DatabaseManager {
             logger.info("Database schema up to date; {} migration(s) applied",
                     result.migrationsExecuted);
         } catch (FlywayException e) {
-            logger.error("Failed to initialize database", e);
+            logger.error("Failed to initialize database schema: {}",
+                    e.getClass().getSimpleName());
             throw new RuntimeException("Failed to initialize database", e);
         }
     }
@@ -167,7 +144,8 @@ public class DatabaseManager {
             try {
                 ds.close();
             } catch (RuntimeException e) {
-                logger.warn("Failed to close database pool cleanly", e);
+                logger.warn("Failed to close database pool cleanly: {}",
+                        e.getClass().getSimpleName());
             }
         }
     }

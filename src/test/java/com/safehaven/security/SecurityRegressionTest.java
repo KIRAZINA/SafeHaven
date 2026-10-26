@@ -54,7 +54,7 @@ class SecurityRegressionTest {
 
     @Test
     void storedPasswordHash_CannotDecryptPrivateKey() throws Exception {
-        authService.register("alice", "secret123");
+        authService.register("alice", "Secret123!");
 
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement ps = conn.prepareStatement(
@@ -71,7 +71,7 @@ class SecurityRegressionTest {
                         () -> CryptoUtils.decryptPrivateKey(encPrivKey, forgedKey),
                         "password_hash must not be usable as a decryption key");
 
-                SecretKey realMasterKey = CryptoUtils.deriveMasterKey("secret123".toCharArray(), salt);
+                SecretKey realMasterKey = CryptoUtils.deriveMasterKey("Secret123!".toCharArray(), salt);
                 assertThat(CryptoUtils.decryptPrivateKey(encPrivKey, realMasterKey)).isNotNull();
             }
         }
@@ -79,9 +79,9 @@ class SecurityRegressionTest {
 
     @Test
     void storedPasswordHash_CannotDecryptFileFek() throws Exception {
-        authService.register("alice", "secret123");
-        User alice = authService.login("alice", "secret123");
-        SecretKey masterKey = CryptoUtils.deriveMasterKey("secret123".toCharArray(), alice.getSalt());
+        authService.register("alice", "Secret123!");
+        User alice = authService.login("alice", "Secret123!");
+        SecretKey masterKey = CryptoUtils.deriveMasterKey("Secret123!".toCharArray(), alice.getSalt());
 
         File tmp = File.createTempFile("sec_test", ".txt");
         try {
@@ -117,8 +117,8 @@ class SecurityRegressionTest {
 
     @Test
     void samePassword_DifferentHashAndMasterKey() throws Exception {
-        authService.register("userA", "samepass");
-        authService.register("userB", "samepass");
+        authService.register("userA", "Samepass1!");
+        authService.register("userB", "Samepass1!");
 
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement ps = conn.prepareStatement(
@@ -135,8 +135,8 @@ class SecurityRegressionTest {
                 assertThat(saltA).isNotEqualTo(saltB);
                 assertThat(hashA).isNotEqualTo(hashB);
 
-                SecretKey mkA = CryptoUtils.deriveMasterKey("samepass".toCharArray(), saltA);
-                SecretKey mkB = CryptoUtils.deriveMasterKey("samepass".toCharArray(), saltB);
+                SecretKey mkA = CryptoUtils.deriveMasterKey("Samepass1!".toCharArray(), saltA);
+                SecretKey mkB = CryptoUtils.deriveMasterKey("Samepass1!".toCharArray(), saltB);
                 assertThat(mkA.getEncoded()).isNotEqualTo(mkB.getEncoded());
             }
         }
@@ -149,10 +149,10 @@ class SecurityRegressionTest {
 
     @Test
     void deleteFile_RollsBackOnPartialFailure() throws Exception {
-        authService.register("alice", "pass");
-        authService.register("bob", "pass");
-        User alice = authService.login("alice", "pass");
-        SecretKey aliceMk = CryptoUtils.deriveMasterKey("pass".toCharArray(), alice.getSalt());
+        authService.register("alice", "Passw0rd!");
+        authService.register("bob", "Passw0rd!");
+        User alice = authService.login("alice", "Passw0rd!");
+        SecretKey aliceMk = CryptoUtils.deriveMasterKey("Passw0rd!".toCharArray(), alice.getSalt());
 
         File tmp = File.createTempFile("atomic", ".txt");
         try {
@@ -161,7 +161,7 @@ class SecurityRegressionTest {
             FileMetadata meta = storageService.listFiles(alice).get(0);
             shareService.shareFile(meta, "bob", alice, aliceMk);
 
-            assertThat(shareService.listSharedWithMe(authService.login("bob", "pass"))).hasSize(1);
+            assertThat(shareService.listSharedWithMe(authService.login("bob", "Passw0rd!"))).hasSize(1);
 
             Connection realConn = DatabaseManager.getConnection();
             Connection proxyConn = buildFailingConnection(realConn);
@@ -174,7 +174,7 @@ class SecurityRegressionTest {
             }
 
             // After rollback, SHARES must still exist
-            assertThat(shareService.listSharedWithMe(authService.login("bob", "pass")))
+            assertThat(shareService.listSharedWithMe(authService.login("bob", "Passw0rd!")))
                     .as("SHARES row must survive rollback after failed FILES delete")
                     .hasSize(1);
 

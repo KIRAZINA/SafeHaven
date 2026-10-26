@@ -2,7 +2,9 @@ package com.safehaven.service;
 
 import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.db.DatabaseManager;
+import com.safehaven.exception.AuthenticationException;
 import com.safehaven.model.User;
+import com.safehaven.utils.ValidationUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,21 +15,46 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Arrays;
+import java.util.List;
 
 public class AuthService implements IAuthService {
     private static final Logger logger = LoggerFactory.getLogger(AuthService.class);
 
+    @Override
     public boolean register(String username, String password) {
-        byte[] salt = CryptoUtils.generateSalt();
+        if (password == null) {
+            throw new AuthenticationException(
+                    "Invalid password: " + String.join(" ",
+                            ValidationUtils.getPasswordValidationErrors(null)));
+        }
+
         char[] passwordChars = password.toCharArray();
         try {
+            return register(username, passwordChars);
+        } finally {
+            Arrays.fill(passwordChars, '\0');
+        }
+    }
+
+    /**
+     * Registers a user after enforcing the username and password rules.
+     *
+     * @throws IllegalArgumentException if either credential violates the rules
+     */
+    @Override
+    public boolean register(String username, char[] password) {
+        try {
+            validateRegistrationInput(username, password);
+
+            byte[] salt = CryptoUtils.generateSalt();
+
             // Derive two independent values from the password + salt.
             // The auth verifier is stored as password_hash and used only for login
             // comparison. The master key is NEVER persisted — it encrypts the user's
             // RSA private key and wraps every file's FEK.  Domain separation ensures
             // that leaking password_hash alone does NOT reveal the master key.
-            byte[] passwordHash = CryptoUtils.deriveAuthVerifier(passwordChars, salt);
-            SecretKey masterKey = CryptoUtils.deriveMasterKey(passwordChars, salt);
+            byte[] passwordHash = CryptoUtils.deriveAuthVerifier(password, salt);
+            SecretKey masterKey = CryptoUtils.deriveMasterKey(password, salt);
 
             // Generate RSA key pair for secure file sharing
             KeyPair rsaPair = CryptoUtils.generateRsaKeyPair();
@@ -52,12 +79,29 @@ public class AuthService implements IAuthService {
                 if (e.getErrorCode() == 23505 || e.getMessage().contains("PRIMARY KEY")) {
                     logger.info("Registration failed — username already exists: {}", username);
                 } else {
-                    logger.error("Registration failed for user: {}", username, e);
+                    logger.error("Registration failed for user {}: {}",
+                            username, e.getClass().getSimpleName());
                 }
                 return false;
             }
         } finally {
-            Arrays.fill(passwordChars, '\0');
+            if (password != null) {
+                Arrays.fill(password, '\0');
+            }
+        }
+    }
+
+    private static void validateRegistrationInput(String username, char[] password) {
+        List<String> usernameErrors = ValidationUtils.getUsernameValidationErrors(username);
+        if (!usernameErrors.isEmpty()) {
+            throw new AuthenticationException(
+                    "Invalid username: " + String.join(" ", usernameErrors));
+        }
+
+        List<String> passwordErrors = ValidationUtils.getPasswordValidationErrors(password);
+        if (!passwordErrors.isEmpty()) {
+            throw new AuthenticationException(
+                    "Invalid password: " + String.join(" ", passwordErrors));
         }
     }
 
@@ -84,7 +128,8 @@ public class AuthService implements IAuthService {
                 }
             }
         } catch (SQLException e) {
-            logger.error("Login failed for user: {}", username, e);
+            logger.error("Login failed for user {}: {}",
+                    username, e.getClass().getSimpleName());
         } finally {
             Arrays.fill(passwordChars, '\0');
         }

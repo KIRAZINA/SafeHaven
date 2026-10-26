@@ -38,8 +38,25 @@ mvn javafx:run
 You can also build a self-contained JAR file:
 ```bash
 mvn clean package
-java -jar target/SafeHaven-1.0-SNAPSHOT.jar
+java -jar target/SafeHaven-1.2.jar
 ```
+
+## ⚙️ Configuration
+
+Settings are resolved in this order: system properties (`-Dkey=value`) →
+environment variables → `application.properties` → built-in defaults.
+
+| Setting | Environment variable | Default |
+| --- | --- | --- |
+| `jdbc.url` | `SAFEHAVEN_JDBC_URL` | `jdbc:h2:./safehaven;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE` |
+| `jdbc.user` | `SAFEHAVEN_JDBC_USER` | `sa` |
+| `jdbc.password` | `SAFEHAVEN_JDBC_PASSWORD` | *(empty)* |
+| `storage.dir` | `SAFEHAVEN_STORAGE_DIR` | `${user.home}/.securestorage` |
+| `session.inactivity.timeout.seconds` | `SAFEHAVEN_INACTIVITY_TIMEOUT` | `300` |
+| `db.pool.max.size` | `SAFEHAVEN_DB_POOL_MAX_SIZE` | `10` |
+| `db.pool.min.idle` | `SAFEHAVEN_DB_POOL_MIN_IDLE` | `2` |
+
+Invalid or non-numeric values fall back to the defaults above.
 
 ## 🛡️ Security Details
 

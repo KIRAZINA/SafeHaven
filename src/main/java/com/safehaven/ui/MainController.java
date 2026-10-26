@@ -284,11 +284,8 @@ public class MainController {
             if (generation != myFilesLoadGeneration) {
                 return;
             }
-            logger.error("Failed to load page {} of files for {}",
-                    requestedPage, user.getUsername(), task.getException());
+            ErrorHandler.handleException("Loading your files", task.getException());
             updateMyFilesPaginationControls();
-            showAlert(Alert.AlertType.ERROR, "Load Error",
-                    "Failed to load files: " + messageOf(task.getException()));
         });
 
         submit(task);
@@ -336,11 +333,8 @@ public class MainController {
             if (generation != sharedFilesLoadGeneration) {
                 return;
             }
-            logger.error("Failed to load page {} of shared files for {}",
-                    requestedPage, user.getUsername(), task.getException());
+            ErrorHandler.handleException("Loading your shared files", task.getException());
             updateSharedFilesPaginationControls();
-            showAlert(Alert.AlertType.ERROR, "Load Error",
-                    "Failed to load shared files: " + messageOf(task.getException()));
         });
 
         submit(task);
@@ -447,13 +441,6 @@ public class MainController {
         }
     }
 
-    private static String messageOf(Throwable throwable) {
-        if (throwable == null) {
-            return "Unknown error";
-        }
-        return throwable.getMessage() != null ? throwable.getMessage() : throwable.toString();
-    }
-
     private record PageResult<T>(List<T> items, long totalItems, int page) { }
 
     // ─── My Files Actions ───────────────────────────────────────────────────
@@ -482,12 +469,11 @@ public class MainController {
             unbindProgress();
             myFilesPage = 0; // Newest files sort first.
             refreshFileList();
-            showAlert(Alert.AlertType.INFORMATION, "Done", "File uploaded successfully.");
+            ErrorHandler.showInfo("Upload Complete", null, "File uploaded successfully.");
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            Throwable ex = task.getException();
-            showAlert(Alert.AlertType.ERROR, "Upload Error", "Failed to upload file: " + ex.getMessage());
+            ErrorHandler.handleException("Uploading your file", task.getException());
         });
         executor.submit(task);
     }
@@ -496,7 +482,8 @@ public class MainController {
     private void handleDownload() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to download.");
+            ErrorHandler.showWarning("Selection Required", null,
+                    "Please select a file to download.");
             return;
         }
 
@@ -521,11 +508,12 @@ public class MainController {
         bindProgress(task);
         task.setOnSucceeded(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.INFORMATION, "Done", "File downloaded successfully.");
+            ErrorHandler.showInfo("Download Complete", null,
+                    "File downloaded successfully.");
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Download Error", "Failed to download file: " + task.getException().getMessage());
+            ErrorHandler.handleException("Downloading your file", task.getException());
         });
         executor.submit(task);
     }
@@ -534,7 +522,8 @@ public class MainController {
     private void handleDelete() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to delete.");
+            ErrorHandler.showWarning("Selection Required", null,
+                    "Please select a file to delete.");
             return;
         }
 
@@ -565,7 +554,7 @@ public class MainController {
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Delete Error", "Failed to delete file: " + task.getException().getMessage());
+            ErrorHandler.handleException("Deleting your file", task.getException());
         });
         executor.submit(task);
     }
@@ -574,7 +563,8 @@ public class MainController {
     private void handleShare() {
         FileMetadata selected = fileTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to share.");
+            ErrorHandler.showWarning("Selection Required", null,
+                    "Please select a file to share.");
             return;
         }
 
@@ -602,11 +592,12 @@ public class MainController {
         bindProgress(task);
         task.setOnSucceeded(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.INFORMATION, "Success", "File successfully shared with " + recipient + ".");
+            ErrorHandler.showInfo("Share Complete", null,
+                    "File successfully shared with " + recipient + ".");
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Share Error", "Failed to share file: " + task.getException().getMessage());
+            ErrorHandler.handleException("Sharing your file", task.getException());
         });
         executor.submit(task);
     }
@@ -617,12 +608,14 @@ public class MainController {
     private void handleDownloadShared() {
         SharedFileEntry selected = sharedTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            showAlert(Alert.AlertType.WARNING, "Warning", "Please select a file to download.");
+            ErrorHandler.showWarning("Selection Required", null,
+                    "Please select a file to download.");
             return;
         }
         
         if (privateKey == null) {
-            showAlert(Alert.AlertType.ERROR, "Error", "Your account does not have RSA keys. Download is not possible.");
+            ErrorHandler.showError("Download Error", "RSA key unavailable",
+                    "Your account does not have RSA keys. Download is not possible.");
             return;
         }
 
@@ -647,11 +640,12 @@ public class MainController {
         bindProgress(task);
         task.setOnSucceeded(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.INFORMATION, "Done", "Shared file downloaded successfully.");
+            ErrorHandler.showInfo("Download Complete", null,
+                    "Shared file downloaded successfully.");
         });
         task.setOnFailed(e -> {
             unbindProgress();
-            showAlert(Alert.AlertType.ERROR, "Download Error", "Failed to download file: " + task.getException().getMessage());
+            ErrorHandler.handleException("Downloading the shared file", task.getException());
         });
         executor.submit(task);
     }
@@ -740,7 +734,8 @@ public class MainController {
             try {
                 performLogout(true);
             } catch (Exception e) {
-                logger.error("Failed to complete inactivity logout", e);
+                logger.error("Failed to complete inactivity logout: {}",
+                        e.getClass().getSimpleName());
                 clearSessionSecrets();
             }
         });
@@ -773,14 +768,16 @@ public class MainController {
             try {
                 secretKey.destroy();
             } catch (DestroyFailedException | RuntimeException e) {
-                logger.warn("Could not destroy master secret key", e);
+                logger.warn("Could not destroy master secret key: {}",
+                        e.getClass().getSimpleName());
             }
         }
         if (privateKey != null) {
             try {
                 privateKey.destroy();
             } catch (DestroyFailedException | RuntimeException e) {
-                logger.warn("Could not destroy RSA private key", e);
+                logger.warn("Could not destroy RSA private key: {}",
+                        e.getClass().getSimpleName());
             }
         }
 
@@ -790,15 +787,5 @@ public class MainController {
 
         // Encourage prompt reclamation of key material after logout.
         System.gc();
-    }
-
-    private void showAlert(Alert.AlertType type, String title, String content) {
-        Platform.runLater(() -> {
-            Alert alert = new Alert(type);
-            alert.setTitle(title);
-            alert.setHeaderText(null);
-            alert.setContentText(content);
-            alert.showAndWait();
-        });
     }
 }

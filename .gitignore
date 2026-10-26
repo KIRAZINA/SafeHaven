@@ -26,6 +26,7 @@ hs_err_pid*
 # Maven
 target/
 .mvn/wrapper/maven-wrapper.jar
+dependency-reduced-pom.xml
 
 # IntelliJ IDEA
 .idea/
@@ -48,3 +49,4 @@ safehaven.trace.db
 
 # SafeHaven Storage
 .securestorage/
+/${user.home}/

@@ -52,14 +52,14 @@ class CrossUserAuthorizationTest {
         storageService = new StorageService();
         shareService = new ShareService();
 
-        authService.register("alice", "passwordA");
-        authService.register("bob", "passwordB");
+        authService.register("alice", "PasswordA1!");
+        authService.register("bob", "PasswordB1!");
 
-        alice = authService.login("alice", "passwordA");
-        aliceMk = CryptoUtils.deriveMasterKey("passwordA".toCharArray(), alice.getSalt());
+        alice = authService.login("alice", "PasswordA1!");
+        aliceMk = CryptoUtils.deriveMasterKey("PasswordA1!".toCharArray(), alice.getSalt());
 
-        bob = authService.login("bob", "passwordB");
-        bobMk = CryptoUtils.deriveMasterKey("passwordB".toCharArray(), bob.getSalt());
+        bob = authService.login("bob", "PasswordB1!");
+        bobMk = CryptoUtils.deriveMasterKey("PasswordB1!".toCharArray(), bob.getSalt());
 
         File tmp = File.createTempFile("alice_file", ".txt");
         try {
@@ -118,9 +118,9 @@ class CrossUserAuthorizationTest {
     void sharedFile_NotAccessibleByUserC() throws Exception {
         shareService.shareFile(aliceFileMeta, "bob", alice, aliceMk);
 
-        authService.register("charlie", "passwordC");
-        User charlie = authService.login("charlie", "passwordC");
-        SecretKey charlieMk = CryptoUtils.deriveMasterKey("passwordC".toCharArray(), charlie.getSalt());
+        authService.register("charlie", "PasswordC1!");
+        User charlie = authService.login("charlie", "PasswordC1!");
+        SecretKey charlieMk = CryptoUtils.deriveMasterKey("PasswordC1!".toCharArray(), charlie.getSalt());
 
         assertTrue(shareService.listSharedWithMe(charlie).isEmpty(),
             "User C must not see files shared with User B");
@@ -132,9 +132,9 @@ class CrossUserAuthorizationTest {
 
         var bobEntry = shareService.listSharedWithMe(bob).get(0);
 
-        authService.register("charlie", "passwordC");
-        User charlie = authService.login("charlie", "passwordC");
-        SecretKey charlieMk = CryptoUtils.deriveMasterKey("passwordC".toCharArray(), charlie.getSalt());
+        authService.register("charlie", "PasswordC1!");
+        User charlie = authService.login("charlie", "PasswordC1!");
+        SecretKey charlieMk = CryptoUtils.deriveMasterKey("PasswordC1!".toCharArray(), charlie.getSalt());
         var charliePrivKey = CryptoUtils.decryptPrivateKey(charlie.getEncryptedPrivateKey(), charlieMk);
 
         File dest = File.createTempFile("charlie_dl", ".txt");

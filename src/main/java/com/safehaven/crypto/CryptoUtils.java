@@ -1,5 +1,7 @@
 package com.safehaven.crypto;
 
+import com.safehaven.exception.CryptoException;
+
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
 import javax.crypto.CipherOutputStream;
@@ -16,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.GeneralSecurityException;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
@@ -55,7 +58,7 @@ public class CryptoUtils {
             SecretKey secret = factory.generateSecret(spec);
             return new SecretKeySpec(secret.getEncoded(), "AES");
         } catch (Exception e) {
-            throw new RuntimeException("Error generating key from password", e);
+            throw new CryptoException("Could not derive a key from the password.", e);
         }
     }
 
@@ -72,7 +75,7 @@ public class CryptoUtils {
             KeySpec spec = new PBEKeySpec(password, domainSalt, PBKDF2_ITERATIONS, AES_KEY_SIZE);
             return factory.generateSecret(spec).getEncoded();
         } catch (Exception e) {
-            throw new RuntimeException("Error deriving auth verifier", e);
+            throw new CryptoException("Could not derive the authentication verifier.", e);
         }
     }
 
@@ -89,7 +92,7 @@ public class CryptoUtils {
             SecretKey secret = factory.generateSecret(spec);
             return new SecretKeySpec(secret.getEncoded(), "AES");
         } catch (Exception e) {
-            throw new RuntimeException("Error deriving master key", e);
+            throw new CryptoException("Could not derive the master key.", e);
         }
     }
 
@@ -108,7 +111,7 @@ public class CryptoUtils {
             kg.init(AES_KEY_SIZE, new SecureRandom());
             return kg.generateKey();
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("AES not available", e);
+            throw new CryptoException("Could not generate a file encryption key.", e);
         }
     }
 
@@ -130,7 +133,7 @@ public class CryptoUtils {
             System.arraycopy(cipherText, 0, result, iv.length, cipherText.length);
             return result;
         } catch (Exception e) {
-            throw new RuntimeException("Error encrypting data", e);
+            throw new CryptoException("Could not encrypt the data.", e);
         }
     }
 
@@ -150,7 +153,7 @@ public class CryptoUtils {
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
             return cipher.doFinal(cipherText);
         } catch (Exception e) {
-            throw new RuntimeException("Error decrypting data", e);
+            throw new CryptoException("Could not decrypt the data.", e);
         }
     }
 
@@ -179,8 +182,13 @@ public class CryptoUtils {
         byte[] iv = new byte[GCM_IV_LENGTH];
         SECURE_RANDOM.nextBytes(iv);
 
-        Cipher cipher = Cipher.getInstance(ALGORITHM);
-        cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+        Cipher cipher;
+        try {
+            cipher = Cipher.getInstance(ALGORITHM);
+            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+        } catch (GeneralSecurityException e) {
+            throw new CryptoException("Could not initialize encryption.", e);
+        }
 
         // Header must be written before any ciphertext.
         out.write(iv);
@@ -220,8 +228,13 @@ public class CryptoUtils {
             offset += read;
         }
 
-        Cipher cipher = Cipher.getInstance(ALGORITHM);
-        cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+        Cipher cipher;
+        try {
+            cipher = Cipher.getInstance(ALGORITHM);
+            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+        } catch (GeneralSecurityException e) {
+            throw new CryptoException("Could not initialize decryption.", e);
+        }
         return new CipherInputStream(in, cipher);
     }
 
@@ -242,7 +255,7 @@ public class CryptoUtils {
             kpg.initialize(RSA_KEY_SIZE, new SecureRandom());
             return kpg.generateKeyPair();
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("RSA not available", e);
+            throw new CryptoException("Could not generate an RSA key pair.", e);
         }
     }
 
@@ -251,18 +264,26 @@ public class CryptoUtils {
      * Uses RSA/ECB/OAEPWithSHA-256AndMGF1Padding.
      */
     public static byte[] wrapKey(SecretKey fek, PublicKey recipientPublicKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(RSA_CIPHER);
-        cipher.init(Cipher.WRAP_MODE, recipientPublicKey);
-        return cipher.wrap(fek);
+        try {
+            Cipher cipher = Cipher.getInstance(RSA_CIPHER);
+            cipher.init(Cipher.WRAP_MODE, recipientPublicKey);
+            return cipher.wrap(fek);
+        } catch (GeneralSecurityException e) {
+            throw new CryptoException("Could not wrap the file key.", e);
+        }
     }
 
     /**
      * Unwraps (decrypts) a wrapped FEK using the owner's RSA private key.
      */
     public static SecretKey unwrapKey(byte[] wrappedKey, PrivateKey privateKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(RSA_CIPHER);
-        cipher.init(Cipher.UNWRAP_MODE, privateKey);
-        return (SecretKey) cipher.unwrap(wrappedKey, "AES", Cipher.SECRET_KEY);
+        try {
+            Cipher cipher = Cipher.getInstance(RSA_CIPHER);
+            cipher.init(Cipher.UNWRAP_MODE, privateKey);
+            return (SecretKey) cipher.unwrap(wrappedKey, "AES", Cipher.SECRET_KEY);
+        } catch (GeneralSecurityException e) {
+            throw new CryptoException("Could not unwrap the file key.", e);
+        }
     }
 
     // ── Private-key serialisation (PKCS#8 + AES-GCM) ────────────────────────
@@ -285,7 +306,7 @@ public class CryptoUtils {
             KeyFactory kf = KeyFactory.getInstance(RSA_ALGORITHM);
             return kf.generatePrivate(new PKCS8EncodedKeySpec(pkcs8));
         } catch (Exception e) {
-            throw new RuntimeException("Error decrypting private key", e);
+            throw new CryptoException("Could not decrypt the private key.", e);
         }
     }
 
@@ -298,7 +319,7 @@ public class CryptoUtils {
             KeyFactory kf = KeyFactory.getInstance(RSA_ALGORITHM);
             return kf.generatePublic(new X509EncodedKeySpec(encoded));
         } catch (Exception e) {
-            throw new RuntimeException("Error decoding public key", e);
+            throw new CryptoException("Could not decode the public key.", e);
         }
     }
 }

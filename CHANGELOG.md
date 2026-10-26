@@ -73,6 +73,34 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.2] - 2026-10-26
+
+### Added
+- **Centralized configuration provider** (`AppConfig`) with a documented override
+  hierarchy: system properties → `SAFEHAVEN_*` environment variables →
+  `application.properties` → hardcoded defaults.
+- Typed, validated accessors for JDBC, connection-pool, storage, and session
+  settings. Invalid or non-numeric overrides fall back safely to defaults.
+- Dynamic `${user.home}` expansion for the storage directory.
+- Centralized UI `ErrorHandler` and domain-specific exception types.
+- `ValidationUtils` for shared input validation.
+
+### Changed
+- `DatabaseManager`, `StorageService`, and `InactivityService` now obtain all
+  configuration through `AppConfig`.
+- Logging sanitized to avoid leaking credentials or sensitive values.
+- Documentation consolidated: redundant release notes/guides removed.
+
+### Removed
+- Redundant release documentation and the tracked generated
+  `dependency-reduced-pom.xml`.
+
+### Testing
+- Expanded suite to 169 tests covering configuration precedence, security
+  regressions, concurrency, and cross-user authorization.
+
+---
+
 ## Legend
 
 - **Added** - New features
