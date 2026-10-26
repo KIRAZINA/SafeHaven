@@ -11,8 +11,6 @@ import com.safehaven.utils.CompressionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.crypto.CipherInputStream;
-import javax.crypto.CipherOutputStream;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.BufferedInputStream;
@@ -69,13 +67,13 @@ public class StorageService implements IStorageService {
         long storedSize;
 
         // Upload pipeline:
-        // FileInputStream -> GZIPOutputStream -> CipherOutputStream -> BufferedOutputStream -> File
+        // FileInputStream -> GZIPOutputStream -> chunked AEAD -> BufferedOutputStream -> File
         try {
             try (InputStream fileIn = new BufferedInputStream(
                          new FileInputStream(source), BUFFER_SIZE);
                  OutputStream fileOut = new BufferedOutputStream(
                          new FileOutputStream(destPath.toFile()), BUFFER_SIZE);
-                 CipherOutputStream cipherOut =
+                 OutputStream cipherOut =
                          CryptoUtils.createEncryptingOutputStream(fileOut, fek)) {
 
                 originalSize = CompressionUtils.compressStream(fileIn, cipherOut);
@@ -122,7 +120,7 @@ public class StorageService implements IStorageService {
 
     /**
      * Download pipeline:
-     * BufferedInputStream(FileInputStream) -> CipherInputStream -> GZIPInputStream -> FileOutputStream.
+     * BufferedInputStream(FileInputStream) -> chunked AEAD -> GZIPInputStream -> FileOutputStream.
      * If any stage fails (including GCM tag verification), the partially
      * written destination file is deleted before the exception propagates.
      */
@@ -131,7 +129,7 @@ public class StorageService implements IStorageService {
         try {
             try (InputStream fileIn = new BufferedInputStream(
                          new FileInputStream(sourcePath.toFile()), BUFFER_SIZE);
-                 CipherInputStream cipherIn =
+                 InputStream cipherIn =
                          CryptoUtils.createDecryptingInputStream(fileIn, fek);
                  OutputStream destOut = new BufferedOutputStream(
                          new FileOutputStream(dest), BUFFER_SIZE)) {
@@ -313,32 +311,51 @@ public class StorageService implements IStorageService {
      * Test-only seam: performs the transactional delete using a caller-provided
      * Connection so tests can inject spy/mock connections to verify rollback.
      * The caller is responsible for closing the connection.
+     *
+     * <p>Ownership is verified against the database before <em>any</em> row or
+     * blob is touched. The caller-supplied {@link FileMetadata} is not trusted
+     * as an authorization source.</p>
      */
     public void deleteFileWithConnection(FileMetadata meta, User user, Connection conn) {
         Path path = Paths.get(STORAGE_DIR, user.getUsername(), meta.getId() + ".enc");
         try {
             conn.setAutoCommit(false);
 
+            // 1. Authorize first: read the authoritative owner from the DB and
+            //    abort before deleting SHARES, FILES, or the encrypted blob.
+            String actualOwner = findFileOwner(conn, meta.getId());
+            if (actualOwner == null || !actualOwner.equals(user.getUsername())) {
+                rollbackQuietly(conn);
+                throw new StorageException("You are not authorized to delete this file.");
+            }
+
             // Delete DB rows FIRST so that a crash between DB and disk
             // leaves an orphaned blob (recoverable) rather than DB rows
             // pointing to a missing file (unrecoverable data loss).
 
-            // 1. Delete from SHARES first to avoid FK constraint violation
+            // 2. Delete from SHARES first to avoid the non-cascading FK
+            //    constraint when the parent FILES row is removed.
             String sqlShares = "DELETE FROM SHARES WHERE file_id = ?";
             try (PreparedStatement pstmt = conn.prepareStatement(sqlShares)) {
                 pstmt.setString(1, meta.getId());
                 pstmt.executeUpdate();
             }
 
-            // 2. Delete from FILES
+            // 3. Delete from FILES, still scoped to the owner. A zero row count
+            //    means the ownership changed or the row vanished mid-transaction.
             String sqlFiles = "DELETE FROM FILES WHERE id = ? AND owner = ?";
+            int deleted;
             try (PreparedStatement pstmt = conn.prepareStatement(sqlFiles)) {
                 pstmt.setString(1, meta.getId());
                 pstmt.setString(2, user.getUsername());
-                pstmt.executeUpdate();
+                deleted = pstmt.executeUpdate();
+            }
+            if (deleted == 0) {
+                rollbackQuietly(conn);
+                throw new StorageException("You are not authorized to delete this file.");
             }
 
-            // 3. Delete the physical encrypted blob
+            // 4. Delete the physical encrypted blob
             try {
                 Files.deleteIfExists(path);
             } catch (IOException e) {
@@ -354,8 +371,26 @@ public class StorageService implements IStorageService {
         } catch (SQLException e) {
             logger.error("Failed to delete file record for file {}: {}",
                     meta.getId(), e.getClass().getSimpleName());
-            try { conn.rollback(); } catch (SQLException ignored) {}
+            rollbackQuietly(conn);
             throw new StorageException("Failed to delete file record", e);
+        }
+    }
+
+    private static String findFileOwner(Connection conn, String fileId) throws SQLException {
+        String sql = "SELECT owner FROM FILES WHERE id = ?";
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, fileId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next() ? rs.getString("owner") : null;
+            }
+        }
+    }
+
+    private static void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
+            // Preserve the original failure; there is nothing else to do.
         }
     }
 }

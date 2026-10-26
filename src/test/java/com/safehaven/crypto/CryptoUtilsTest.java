@@ -225,8 +225,10 @@ public class CryptoUtilsTest {
         CryptoUtils.encryptStream(new ByteArrayInputStream(original), encrypted, key);
 
         byte[] cipherBytes = encrypted.toByteArray();
-        assertTrue(cipherBytes.length > 12,
-                "Ciphertext must contain a 12-byte IV plus ciphertext and tag");
+        assertTrue(cipherBytes.length > 20,
+                "Ciphertext must contain the magic header, nonce, chunk, and end marker");
+        assertArrayEquals(CryptoUtils.STREAM_MAGIC, Arrays.copyOf(cipherBytes, 8),
+                "Chunked payloads must begin with the versioned magic header");
 
         ByteArrayOutputStream decrypted = new ByteArrayOutputStream();
         CryptoUtils.decryptStream(new ByteArrayInputStream(cipherBytes), decrypted, key);
@@ -236,7 +238,7 @@ public class CryptoUtilsTest {
     }
 
     @Test
-    void streamEncrypt_UsesFreshTwelveByteIvHeader() throws Exception {
+    void streamEncrypt_UsesFreshHeaderAndNonce() throws Exception {
         SecretKey key = CryptoUtils.generateFileKey();
         byte[] data = "IV header check".getBytes(StandardCharsets.UTF_8);
 
@@ -248,13 +250,34 @@ public class CryptoUtilsTest {
         byte[] firstBytes = first.toByteArray();
         byte[] secondBytes = second.toByteArray();
 
-        assertFalse(Arrays.equals(Arrays.copyOf(firstBytes, 12),
-                                  Arrays.copyOf(secondBytes, 12)),
-                "Each stream encryption must use a fresh random IV");
+        assertArrayEquals(CryptoUtils.STREAM_MAGIC, Arrays.copyOf(firstBytes, 8));
+        assertFalse(Arrays.equals(Arrays.copyOf(firstBytes, 16),
+                                  Arrays.copyOf(secondBytes, 16)),
+                "Each stream encryption must use a fresh random nonce");
 
         ByteArrayOutputStream roundTrip = new ByteArrayOutputStream();
         CryptoUtils.decryptStream(new ByteArrayInputStream(firstBytes), roundTrip, key);
         assertArrayEquals(data, roundTrip.toByteArray());
+    }
+
+    @Test
+    void legacyStream_RemainsDecryptable() throws Exception {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] original = "Legacy v1 payload".getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream legacy = new ByteArrayOutputStream();
+        CryptoUtils.encryptLegacyStream(new ByteArrayInputStream(original), legacy, key);
+        byte[] legacyBytes = legacy.toByteArray();
+
+        // Legacy payloads start with a raw 12-byte IV, not the chunked magic.
+        assertFalse(Arrays.equals(CryptoUtils.STREAM_MAGIC, Arrays.copyOf(legacyBytes, 8)),
+                "Legacy payload must not be mistaken for the chunked format");
+
+        ByteArrayOutputStream decrypted = new ByteArrayOutputStream();
+        CryptoUtils.decryptStream(new ByteArrayInputStream(legacyBytes), decrypted, key);
+
+        assertArrayEquals(original, decrypted.toByteArray(),
+                "Legacy single-stream payloads must remain readable");
     }
 
     @Test
@@ -293,7 +316,7 @@ public class CryptoUtilsTest {
     }
 
     @Test
-    void decryptStream_ShortIv_Throws() {
+    void decryptStream_ShortHeader_Throws() {
         SecretKey key = CryptoUtils.generateFileKey();
         byte[] tooShort = new byte[11];
 
@@ -302,7 +325,7 @@ public class CryptoUtilsTest {
                         new ByteArrayInputStream(tooShort),
                         new ByteArrayOutputStream(),
                         key),
-                "Streams shorter than the 12-byte IV must be rejected");
+                "Streams shorter than the header plus IV must be rejected");
     }
 
     @Test
@@ -314,7 +337,9 @@ public class CryptoUtilsTest {
         CryptoUtils.encryptStream(new ByteArrayInputStream(data), encrypted, key);
         byte[] cipherBytes = encrypted.toByteArray();
 
-        cipherBytes[cipherBytes.length - 1] ^= 0x01;
+        // The final 4 bytes are the zero-length end marker; corrupt the last
+        // byte of the chunk's GCM tag instead.
+        cipherBytes[cipherBytes.length - 5] ^= 0x01;
 
         assertThrows(Exception.class, () ->
                 CryptoUtils.decryptStream(
@@ -322,6 +347,27 @@ public class CryptoUtilsTest {
                         new ByteArrayOutputStream(),
                         key),
                 "Corrupting the GCM tag must fail stream decryption");
+    }
+
+    @Test
+    void decryptStream_TruncatedChunks_Throws() throws Exception {
+        SecretKey key = CryptoUtils.generateFileKey();
+        byte[] data = new byte[CryptoUtils.STREAM_CHUNK_SIZE + 32];
+        new java.util.Random(11).nextBytes(data);
+
+        ByteArrayOutputStream encrypted = new ByteArrayOutputStream();
+        CryptoUtils.encryptStream(new ByteArrayInputStream(data), encrypted, key);
+        byte[] cipherBytes = encrypted.toByteArray();
+
+        // Drop the end marker, simulating a truncated multi-chunk payload.
+        byte[] truncated = Arrays.copyOf(cipherBytes, cipherBytes.length - 4);
+
+        assertThrows(IOException.class, () ->
+                CryptoUtils.decryptStream(
+                        new ByteArrayInputStream(truncated),
+                        new ByteArrayOutputStream(),
+                        key),
+                "A chunked payload without an end marker must be rejected");
     }
 
     private static InputStream syntheticStream(long length) {

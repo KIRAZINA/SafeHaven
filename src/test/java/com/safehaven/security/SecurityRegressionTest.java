@@ -189,9 +189,9 @@ class SecurityRegressionTest {
         }
     }
 
-    /** Creates a Connection proxy that lets the first {@code prepareStatement}
-     *  through normally, but wraps the second PreparedStatement so its
-     *  {@code executeUpdate()} throws {@code SQLException}. */
+    /** Creates a Connection proxy that lets the first two {@code prepareStatement}
+     *  calls through (ownership SELECT, then SHARES delete) but wraps the third
+     *  (FILES delete) so its {@code executeUpdate()} throws {@code SQLException}. */
     private static Connection buildFailingConnection(Connection real) {
         final int[] callCount = {0};
         return (Connection) Proxy.newProxyInstance(
@@ -202,7 +202,7 @@ class SecurityRegressionTest {
                         callCount[0]++;
                         PreparedStatement realPs = (PreparedStatement)
                                 method.invoke(real, args);
-                        if (callCount[0] == 2) {
+                        if (callCount[0] == 3) {
                             return Proxy.newProxyInstance(
                                     PreparedStatement.class.getClassLoader(),
                                     new Class[]{PreparedStatement.class},

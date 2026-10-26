@@ -2,6 +2,7 @@ package com.safehaven.integration;
 
 import com.safehaven.crypto.CryptoUtils;
 import com.safehaven.db.DatabaseManager;
+import com.safehaven.exception.StorageException;
 import com.safehaven.model.FileMetadata;
 import com.safehaven.model.User;
 import com.safehaven.service.AuthService;
@@ -106,7 +107,9 @@ class CrossUserAuthorizationTest {
 
     @Test
     void userA_CannotDeleteUserB_File() throws Exception {
-        storageService.deleteFile(aliceFileMeta, bob);
+        assertThrows(StorageException.class,
+            () -> storageService.deleteFile(aliceFileMeta, bob),
+            "User B must not be able to delete User A's file");
 
         assertFalse(storageService.listFiles(alice).isEmpty(),
             "User A's file must still exist after User B attempts to delete it");

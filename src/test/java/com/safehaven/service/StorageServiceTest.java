@@ -5,12 +5,16 @@ import com.safehaven.db.DatabaseManager;
 import com.safehaven.model.FileMetadata;
 import com.safehaven.model.SharedFileEntry;
 import com.safehaven.model.User;
+import com.safehaven.utils.CompressionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import javax.crypto.SecretKey;
+import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -96,6 +100,46 @@ public class StorageServiceTest {
         List<FileMetadata> files = storageService.listFiles(testUser);
         assertEquals(1, files.size(), "Should have 1 file listed");
         assertEquals(tempFile.getName(), files.get(0).getFilename(), "Filename should match");
+    }
+
+    @Test
+    void testDownload_LegacySingleStreamFile_RemainsReadable() throws Exception {
+        SecretKey fek = CryptoUtils.generateFileKey();
+        byte[] plaintext = "Legacy v1.2 file content"
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] compressed = CompressionUtils.compress(plaintext);
+
+        Path userDir = Paths.get(System.getProperty("user.home"),
+                ".securestorage", testUser.getUsername());
+        Files.createDirectories(userDir);
+        String fileId = java.util.UUID.randomUUID().toString();
+        Path storedFile = userDir.resolve(fileId + ".enc");
+        try {
+            // Simulate a file written by v1.2: GZIP compressed and then
+            // encrypted with the legacy single-stream IV || ciphertext format.
+            try (OutputStream out = Files.newOutputStream(storedFile)) {
+                CryptoUtils.encryptLegacyStream(
+                        new ByteArrayInputStream(compressed), out, fek);
+            }
+
+            byte[] encryptedFek = CryptoUtils.encrypt(fek.getEncoded(), secretKey);
+            FileMetadata meta = new FileMetadata(
+                    fileId, "legacy.txt", testUser.getUsername(),
+                    plaintext.length, Files.size(storedFile),
+                    System.currentTimeMillis(), encryptedFek);
+
+            File dest = File.createTempFile("legacy_dl", ".txt");
+            try {
+                storageService.downloadFile(meta, testUser, secretKey, dest);
+                assertEquals("Legacy v1.2 file content",
+                        Files.readString(dest.toPath()),
+                        "Legacy single-stream files must remain downloadable");
+            } finally {
+                Files.deleteIfExists(dest.toPath());
+            }
+        } finally {
+            Files.deleteIfExists(storedFile);
+        }
     }
 
     @Test
@@ -387,9 +431,11 @@ public class StorageServiceTest {
         Path storedFile = Paths.get(System.getProperty("user.home"),
                 ".securestorage", testUser.getUsername(), meta.getId() + ".enc");
 
-        // Corrupt the trailing GCM authentication tag.
+        // Corrupt the trailing GCM authentication tag of the final chunk.
+        // The chunked format ends with a 4-byte zero end marker, so the tag
+        // occupies the four bytes immediately before it.
         byte[] cipherBytes = Files.readAllBytes(storedFile);
-        cipherBytes[cipherBytes.length - 1] ^= 0x01;
+        cipherBytes[cipherBytes.length - 5] ^= 0x01;
         Files.write(storedFile, cipherBytes);
 
         File dest = File.createTempFile("corrupt_dl", ".txt");

@@ -2,6 +2,7 @@ package com.safehaven.crypto;
 
 import com.safehaven.exception.CryptoException;
 
+import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
 import javax.crypto.CipherOutputStream;
@@ -11,6 +12,7 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -39,6 +41,25 @@ public class CryptoUtils {
     private static final int    PBKDF2_ITERATIONS = 65536;
     private static final int    SALT_LENGTH    = 16;
     private static final int    STREAM_BUFFER_SIZE = 8192;
+    private static final int    GCM_TAG_LENGTH_BYTES = GCM_TAG_LENGTH / 8;
+    private static final int    STREAM_NONCE_LENGTH = 8;
+
+    /**
+     * Chunk size for the versioned chunked-AEAD stream format. Every chunk is
+     * independently authenticated, so decryption never needs to retain more
+     * than one chunk (plus its tag and IV) in memory.
+     */
+    public static final int STREAM_CHUNK_SIZE = 64 * 1024;
+
+    /**
+     * Magic/version header for the chunked format. The first byte is the
+     * format version ({@code 0x02}); the remaining bytes make accidental
+     * collision with a legacy random IV vanishingly unlikely.
+     */
+    static final byte[] STREAM_MAGIC = new byte[] {
+            0x02, 'S', 'H', 'A', 'V', 'E', 'N', '2'
+    };
+
     private static final String AUTH_DOMAIN    = "safehaven-auth-v1";
     private static final String MASTER_KEY_DOMAIN = "safehaven-mk-v1";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -160,24 +181,32 @@ public class CryptoUtils {
     // ── Symmetric AES-GCM stream processing ──────────────────────────────────
 
     /**
-     * Encrypts the bytes read from {@code in} to {@code out} using AES-256-GCM.
-     * The output format is {@code IV (12 bytes) || ciphertext+tag}. A fresh
-     * random IV is generated for every call and written before the ciphertext.
-     * The supplied {@code out} stream is closed by this method.
+     * Encrypts the bytes read from {@code in} to {@code out} using the versioned
+     * chunked-AEAD stream format. The output is:
+     *
+     * <pre>
+     *   magic/version (8 bytes) || file nonce (8 bytes)
+     *   repeated: chunk length (4 bytes) || ciphertext (length bytes) || tag (16 bytes)
+     *   end marker: zero chunk length (4 bytes)
+     * </pre>
+     *
+     * Each chunk is independently authenticated, so decryption memory stays
+     * bounded regardless of the total stream size. The supplied {@code out}
+     * stream is closed by this method.
      */
     public static void encryptStream(InputStream in, OutputStream out, SecretKey key) throws Exception {
-        try (CipherOutputStream cipherOut = createEncryptingOutputStream(out, key)) {
+        try (OutputStream cipherOut = createEncryptingOutputStream(out, key)) {
             copyStream(in, cipherOut);
         }
     }
 
     /**
-     * Wraps {@code out} in an AES-256-GCM {@link CipherOutputStream}. The
-     * 12-byte IV is generated and written to {@code out} immediately, before
-     * any ciphertext. The caller owns the returned stream and must close it so
-     * that the GCM authentication tag is written.
+     * Encrypts {@code in} to {@code out} using the legacy v1 single-stream
+     * format ({@code IV (12 bytes) || ciphertext+tag}). New data always uses
+     * {@link #encryptStream}; this method exists so tests and compatibility
+     * tooling can produce payloads that exercise the legacy fallback.
      */
-    public static CipherOutputStream createEncryptingOutputStream(OutputStream out, SecretKey key)
+    public static void encryptLegacyStream(InputStream in, OutputStream out, SecretKey key)
             throws Exception {
         byte[] iv = new byte[GCM_IV_LENGTH];
         SECURE_RANDOM.nextBytes(iv);
@@ -190,43 +219,59 @@ public class CryptoUtils {
             throw new CryptoException("Could not initialize encryption.", e);
         }
 
-        // Header must be written before any ciphertext.
         out.write(iv);
-        out.flush();
-
-        return new CipherOutputStream(out, cipher);
+        try (CipherOutputStream cipherOut = new CipherOutputStream(out, cipher)) {
+            copyStream(in, cipherOut);
+        }
     }
 
     /**
-     * Decrypts AES-256-GCM data produced by {@link #encryptStream} from
-     * {@code in} to {@code out}. The first 12 bytes of {@code in} are consumed
-     * as the IV. The supplied {@code in} stream is closed; {@code out} is
-     * flushed but left open for the caller.
+     * Wraps {@code out} in a chunked-AEAD encrypting stream. The header is
+     * written immediately. The caller owns the returned stream and must close
+     * it so that any buffered final chunk and the end marker are written.
+     */
+    public static OutputStream createEncryptingOutputStream(OutputStream out, SecretKey key)
+            throws Exception {
+        return new ChunkedGcmOutputStream(out, key);
+    }
+
+    /**
+     * Decrypts data produced by {@link #encryptStream} (chunked format) or by
+     * the legacy v1 single-stream format from {@code in} to {@code out}. The
+     * supplied {@code in} stream is closed; {@code out} is flushed but left
+     * open for the caller.
      */
     public static void decryptStream(InputStream in, OutputStream out, SecretKey key) throws Exception {
-        try (CipherInputStream cipherIn = createDecryptingInputStream(in, key)) {
+        try (InputStream cipherIn = createDecryptingInputStream(in, key)) {
             copyStream(cipherIn, out);
         }
         out.flush();
     }
 
     /**
-     * Wraps {@code in} in an AES-256-GCM {@link CipherInputStream}, reading
-     * exactly the leading 12-byte IV first. The caller owns the returned
-     * stream and must read it to EOF so the GCM tag is verified.
+     * Detects the payload format and returns a decrypting {@link InputStream}.
+     *
+     * <p>Chunked payloads start with {@link #STREAM_MAGIC}; anything else is
+     * treated as a legacy v1 payload whose first bytes are the leading part of
+     * the 12-byte raw IV. The caller owns the returned stream and must read it
+     * to EOF (or close it) so every authentication tag is verified.</p>
      */
-    public static CipherInputStream createDecryptingInputStream(InputStream in, SecretKey key)
+    public static InputStream createDecryptingInputStream(InputStream in, SecretKey key)
             throws Exception {
-        byte[] iv = new byte[GCM_IV_LENGTH];
-        int offset = 0;
-        while (offset < GCM_IV_LENGTH) {
-            int read = in.read(iv, offset, GCM_IV_LENGTH - offset);
-            if (read == -1) {
-                throw new IOException(
-                        "Encrypted stream is too short to contain a " + GCM_IV_LENGTH + "-byte IV");
-            }
-            offset += read;
+        byte[] header = new byte[8];
+        readFully(in, header, 0, header.length, "encrypted stream header");
+
+        if (Arrays.equals(header, STREAM_MAGIC)) {
+            byte[] nonce = new byte[STREAM_NONCE_LENGTH];
+            readFully(in, nonce, 0, nonce.length, "chunked stream nonce");
+            return new ChunkedGcmInputStream(in, key, nonce);
         }
+
+        // Legacy v1.x: the eight bytes already consumed are the first part of
+        // the 12-byte IV; read the remaining four bytes.
+        byte[] iv = new byte[GCM_IV_LENGTH];
+        System.arraycopy(header, 0, iv, 0, header.length);
+        readFully(in, iv, header.length, GCM_IV_LENGTH - header.length, "legacy stream IV");
 
         Cipher cipher;
         try {
@@ -243,6 +288,260 @@ public class CryptoUtils {
         int read;
         while ((read = in.read(buffer)) != -1) {
             out.write(buffer, 0, read);
+        }
+    }
+
+    private static void readFully(InputStream in, byte[] buffer, int offset, int length,
+                                  String what) throws IOException {
+        int total = 0;
+        while (total < length) {
+            int read = in.read(buffer, offset + total, length - total);
+            if (read == -1) {
+                throw new EOFException(
+                        "Encrypted stream is truncated while reading " + what);
+            }
+            total += read;
+        }
+    }
+
+    private static int readChunkLength(InputStream in) throws IOException {
+        byte[] lengthBytes = new byte[4];
+        readFully(in, lengthBytes, 0, lengthBytes.length, "chunk length");
+        return ((lengthBytes[0] & 0xFF) << 24)
+                | ((lengthBytes[1] & 0xFF) << 16)
+                | ((lengthBytes[2] & 0xFF) << 8)
+                | (lengthBytes[3] & 0xFF);
+    }
+
+    private static byte[] intToBytes(int value) {
+        return new byte[] {
+                (byte) (value >>> 24),
+                (byte) (value >>> 16),
+                (byte) (value >>> 8),
+                (byte) value
+        };
+    }
+
+    /**
+     * Buffers plaintext into fixed-size chunks and writes each one as an
+     * independent AES-256-GCM ciphertext. Bounded memory: at most one chunk
+     * is held in addition to the caller's stream buffers.
+     */
+    private static final class ChunkedGcmOutputStream extends OutputStream {
+        private final OutputStream out;
+        private final SecretKey key;
+        private final byte[] nonce;
+        private final byte[] buffer = new byte[STREAM_CHUNK_SIZE];
+        private int buffered;
+        private int chunkIndex;
+        private boolean closed;
+
+        private ChunkedGcmOutputStream(OutputStream out, SecretKey key) throws IOException {
+            this.out = out;
+            this.key = key;
+            this.nonce = new byte[STREAM_NONCE_LENGTH];
+            SECURE_RANDOM.nextBytes(nonce);
+            out.write(STREAM_MAGIC);
+            out.write(nonce);
+        }
+
+        @Override
+        public void write(int value) throws IOException {
+            if (buffered == STREAM_CHUNK_SIZE) {
+                flushChunk();
+            }
+            buffer[buffered++] = (byte) value;
+        }
+
+        @Override
+        public void write(byte[] data, int offset, int length) throws IOException {
+            if (data == null) {
+                throw new NullPointerException();
+            }
+            if (offset < 0 || length < 0 || offset + length > data.length) {
+                throw new IndexOutOfBoundsException();
+            }
+            while (length > 0) {
+                if (buffered == STREAM_CHUNK_SIZE) {
+                    flushChunk();
+                }
+                int copy = Math.min(length, STREAM_CHUNK_SIZE - buffered);
+                System.arraycopy(data, offset, buffer, buffered, copy);
+                buffered += copy;
+                offset += copy;
+                length -= copy;
+            }
+        }
+
+        @Override
+        public void flush() throws IOException {
+            flushChunk();
+            out.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            try {
+                flushChunk();
+                out.write(new byte[4]); // zero-length end marker
+                out.flush();
+            } finally {
+                out.close();
+            }
+        }
+
+        private void flushChunk() throws IOException {
+            if (buffered == 0) {
+                return;
+            }
+
+            byte[] lengthBytes = intToBytes(buffered);
+            byte[] counterBytes = intToBytes(chunkIndex);
+            byte[] iv = new byte[GCM_IV_LENGTH];
+            System.arraycopy(nonce, 0, iv, 0, STREAM_NONCE_LENGTH);
+            System.arraycopy(counterBytes, 0, iv, STREAM_NONCE_LENGTH, counterBytes.length);
+
+            // Bind both the chunk index and its plaintext length so a chunk
+            // cannot be silently reordered or reshaped.
+            byte[] aad = new byte[8];
+            System.arraycopy(lengthBytes, 0, aad, 0, lengthBytes.length);
+            System.arraycopy(counterBytes, 0, aad, lengthBytes.length, counterBytes.length);
+
+            byte[] ciphertext;
+            try {
+                Cipher cipher = Cipher.getInstance(ALGORITHM);
+                cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+                cipher.updateAAD(aad);
+                ciphertext = cipher.doFinal(buffer, 0, buffered);
+            } catch (GeneralSecurityException e) {
+                throw new IOException("Could not encrypt stream chunk " + chunkIndex, e);
+            }
+
+            out.write(lengthBytes);
+            out.write(ciphertext);
+            chunkIndex++;
+            buffered = 0;
+        }
+    }
+
+    /**
+     * Decrypts the chunked format one chunk at a time. Only the current
+     * plaintext chunk (at most {@link #STREAM_CHUNK_SIZE} bytes) and its
+     * ciphertext are retained, so heap use is independent of file size.
+     */
+    private static final class ChunkedGcmInputStream extends InputStream {
+        private final InputStream in;
+        private final SecretKey key;
+        private final byte[] nonce;
+        private int chunkIndex;
+        private byte[] chunk = new byte[0];
+        private int position;
+        private boolean endOfStream;
+        private boolean closed;
+
+        private ChunkedGcmInputStream(InputStream in, SecretKey key, byte[] nonce) {
+            this.in = in;
+            this.key = key;
+            this.nonce = nonce;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (!ensureChunk()) {
+                return -1;
+            }
+            return chunk[position++] & 0xFF;
+        }
+
+        @Override
+        public int read(byte[] data, int offset, int length) throws IOException {
+            if (data == null) {
+                throw new NullPointerException();
+            }
+            if (offset < 0 || length < 0 || offset + length > data.length) {
+                throw new IndexOutOfBoundsException();
+            }
+            if (length == 0) {
+                return 0;
+            }
+            if (!ensureChunk()) {
+                return -1;
+            }
+            int count = Math.min(length, chunk.length - position);
+            System.arraycopy(chunk, position, data, offset, count);
+            position += count;
+            return count;
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            try {
+                // Drain so any remaining chunk tags and the end marker are
+                // verified even when the caller stops reading early.
+                byte[] drain = new byte[STREAM_BUFFER_SIZE];
+                while (read(drain) != -1) {
+                    // discard
+                }
+            } finally {
+                in.close();
+            }
+        }
+
+        private boolean ensureChunk() throws IOException {
+            while (position >= chunk.length) {
+                if (endOfStream) {
+                    return false;
+                }
+
+                int length = readChunkLength(in);
+                if (length == 0) {
+                    endOfStream = true;
+                    chunk = new byte[0];
+                    position = 0;
+                    return false;
+                }
+                if (length < 0 || length > STREAM_CHUNK_SIZE) {
+                    throw new IOException("Invalid encrypted chunk length: " + length);
+                }
+
+                byte[] lengthBytes = intToBytes(length);
+                byte[] counterBytes = intToBytes(chunkIndex);
+                byte[] iv = new byte[GCM_IV_LENGTH];
+                System.arraycopy(nonce, 0, iv, 0, STREAM_NONCE_LENGTH);
+                System.arraycopy(counterBytes, 0, iv, STREAM_NONCE_LENGTH, counterBytes.length);
+
+                byte[] aad = new byte[8];
+                System.arraycopy(lengthBytes, 0, aad, 0, lengthBytes.length);
+                System.arraycopy(counterBytes, 0, aad, lengthBytes.length, counterBytes.length);
+
+                byte[] ciphertext = new byte[length + GCM_TAG_LENGTH_BYTES];
+                readFully(in, ciphertext, 0, ciphertext.length, "encrypted chunk data");
+
+                try {
+                    Cipher cipher = Cipher.getInstance(ALGORITHM);
+                    cipher.init(Cipher.DECRYPT_MODE, key,
+                            new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+                    cipher.updateAAD(aad);
+                    chunk = cipher.doFinal(ciphertext);
+                } catch (AEADBadTagException e) {
+                    throw new IOException("Encrypted chunk failed authentication", e);
+                } catch (GeneralSecurityException e) {
+                    throw new IOException(
+                            "Could not decrypt stream chunk " + chunkIndex, e);
+                }
+
+                position = 0;
+                chunkIndex++;
+            }
+            return true;
         }
     }
 
